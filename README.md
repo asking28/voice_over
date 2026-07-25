@@ -158,6 +158,34 @@ a full fade-out plus fade-in — an audible dip inside what the listener hears a
 Fades are now applied at placement time, where the surrounding gaps are known: a full
 `--fade-ms` against silence, a 2 ms click-guard against a neighbour.
 
+## Cut & trim — the second tab
+
+A separate tab for taking sections *out* of a video and closing the gap, so it continues from
+the next kept moment. It shares nothing with the re-voicing flow except the file browser.
+
+- **Audio presence.** The waveform envelope is computed from the extracted 16 kHz audio, and
+  silence is found with ffmpeg's `silencedetect` — so the quiet stretches are shaded behind the
+  waveform and you can see at a glance where there's actually anything to keep.
+- **Marking.** Drag across the waveform to select, click to seek. *Mark long silences* marks
+  every silence over 1 s in one go, leaving 0.15 s of padding either side so words aren't
+  clipped. Overlapping marks merge. Undo is a stack.
+- **Cutting.** `precise` (default) does one ffmpeg pass with `select`/`aselect` plus
+  `setpts`/`asetpts` — the re-timing is what actually closes the gap, and cut points land
+  exactly where you put them at the cost of re-encoding the video. `fast` stream-copies each
+  kept range and concatenates, which skips the re-encode but snaps every cut to the nearest
+  preceding keyframe.
+- **Use this in Re-voice →** hands the trimmed file straight to the other tab.
+
+The extracted audio is cached per (path, mtime, size) under `jobs/_analysis/`, so re-opening a
+file is instant while an edited file re-analyses. The original is never modified — cuts are
+written to a new file (`<name>.cut.mp4` by default).
+
+```
+revoice/waveform.py   envelope + silence detection  (analyze → peaks, speech, silence)
+revoice/clip.py       keep_ranges / plan / cut      (precise and fast strategies)
+web/cut.js            the tab: canvas, drag-select, cut list, export
+```
+
 ## ✨ Auto-smooth — the agent pass
 
 `--merge-gap` fuses split sentences by a pure timing rule, which catches most of them but is

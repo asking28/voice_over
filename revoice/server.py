@@ -16,7 +16,7 @@ from fastapi import Body, FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import _http, media, tts
+from . import _http, clip, media, tts, waveform
 from .config import ROOT, Options, env
 from .jobs import STORE
 from .timeline import Transcript
@@ -135,6 +135,63 @@ def browse(path: str = Query("", description="directory to list; defaults to $HO
         if (Path.home() / name).is_dir()
     ]
     return {"dir": str(target), "parent": parent, "entries": dirs + files, "shortcuts": shortcuts}
+
+
+# --------------------------------------------------------------- audio presence / cutting
+
+
+@app.post("/api/analyze")
+def analyze(payload: dict = Body(...)) -> dict:
+    """Waveform envelope + where speech and silence actually are, for the Cut tab.
+
+    The extracted audio is cached per (path, mtime, size), so re-opening a file is instant but
+    an edited file re-analyses.
+    """
+    target = _safe(str(payload.get("path") or ""))
+    if not target.is_file():
+        raise HTTPException(404, f"no such file: {target}")
+    try:
+        result = waveform.analyze(
+            target,
+            buckets=int(payload.get("buckets") or 1600),
+            noise_db=float(payload.get("noise_db") or -35.0),
+            min_silence=float(payload.get("min_silence") or 0.4),
+        )
+    except media.MediaError as exc:
+        raise HTTPException(400, str(exc))
+    return result.to_dict()
+
+
+@app.post("/api/clip/plan")
+def clip_plan(payload: dict = Body(...)) -> dict:
+    """What a cut list would produce — durations only, nothing written."""
+    target = _safe(str(payload.get("path") or ""))
+    if not target.is_file():
+        raise HTTPException(404, f"no such file: {target}")
+    duration = float(payload.get("duration") or 0.0) or media.probe(target).duration
+    cuts = [(float(a), float(b)) for a, b in (payload.get("cuts") or [])]
+    return clip.plan(cuts, duration)
+
+
+@app.post("/api/clip")
+def clip_run(payload: dict = Body(...)) -> dict:
+    """Cut the marked ranges out and join the remainder. Runs as a background job."""
+    target = _safe(str(payload.get("path") or ""))
+    if not target.is_file():
+        raise HTTPException(404, f"no such file: {target}")
+    cuts = payload.get("cuts") or []
+    if not cuts:
+        raise HTTPException(400, "no cuts marked")
+
+    output = str(payload.get("output_path") or "").strip()
+    try:
+        job = STORE.create_clip(
+            str(target), cuts, output, mode=str(payload.get("mode") or "precise")
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc))
+    STORE.start_clip(job)
+    return job.to_dict()
 
 
 @app.get("/api/probe")
@@ -278,6 +335,18 @@ def synthesize(job_id: str, payload: dict = Body(default={})) -> dict:
 _MEDIA_TYPES = {".mp4": "video/mp4", ".mov": "video/quicktime", ".wav": "audio/wav",
                 ".json": "application/json", ".srt": "text/plain", ".mkv": "video/x-matroska",
                 ".webm": "video/webm", ".m4v": "video/mp4"}
+
+
+@app.get("/api/media")
+def media_file(path: str = Query(...)):
+    """Stream a local media file for preview (Cut tab). Confined to BROWSE_ROOT like everything
+    else that takes a path from the browser."""
+    target = _safe(path)
+    if not target.is_file():
+        raise HTTPException(404, f"no such file: {target}")
+    return FileResponse(
+        target, media_type=_MEDIA_TYPES.get(target.suffix.lower(), "application/octet-stream")
+    )
 
 
 @app.get("/api/jobs/{job_id}/file/{kind}")

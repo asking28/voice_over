@@ -38,6 +38,19 @@ def ffmpeg(args: list[str], **kwargs) -> str:
     return run([_tool("ffmpeg"), "-hide_banner", "-loglevel", "error", "-y", *args], **kwargs)
 
 
+def ffmpeg_stderr(args: list[str], *, timeout: int = 3600) -> str:
+    """Run ffmpeg and return stderr. Filters like silencedetect report their findings there,
+    not on stdout, so the caller wants the log rather than the (empty) output."""
+    proc = subprocess.run(
+        [_tool("ffmpeg"), "-hide_banner", "-nostats", *args],
+        capture_output=True, text=True, timeout=timeout,
+    )
+    if proc.returncode != 0:
+        tail = "\n".join((proc.stderr or "").strip().splitlines()[-12:])
+        raise MediaError(f"ffmpeg failed ({proc.returncode}):\n{tail}")
+    return proc.stderr or ""
+
+
 def ffprobe_json(path: str | Path) -> dict:
     out = run(
         [

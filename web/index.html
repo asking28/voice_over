@@ -20,7 +20,12 @@
   <div class="health" id="health"></div>
 </header>
 
-<main>
+<nav class="tabs" id="tabs">
+  <button data-tab="revoice" class="on">Re-voice</button>
+  <button data-tab="cut">Cut &amp; trim</button>
+</nav>
+
+<main id="tab-revoice">
 
   <!-- ─────────────────────────────────────────────────────────── 1. source -->
   <section class="card" id="card-source">
@@ -204,6 +209,94 @@
 
 </main>
 
+<!-- ══════════════════════════════════════════════════════════════ CUT & TRIM ══ -->
+<main id="tab-cut" class="hidden">
+
+  <section class="card">
+    <div class="card-head">
+      <h2><span class="step">1</span> Local file</h2>
+      <span class="hint">removes sections and joins what's left — the original is never modified</span>
+    </div>
+    <div class="row">
+      <input type="text" id="cut-path" class="grow mono" placeholder="/Users/you/Movies/talk.mp4"
+             spellcheck="false" autocomplete="off">
+      <button class="btn ghost" id="cut-browse">Browse…</button>
+      <button class="btn primary" id="cut-analyze">Analyze audio</button>
+    </div>
+    <div id="cut-info" class="info-strip hidden"></div>
+  </section>
+
+  <section class="card hidden" id="cut-editor">
+    <div class="card-head">
+      <h2><span class="step">2</span> Audio presence</h2>
+      <span class="hint" id="cut-stats"></span>
+    </div>
+
+    <div class="wave-wrap">
+      <canvas id="wave" height="150"></canvas>
+      <div class="wave-legend">
+        <span class="k speech"></span> speech
+        <span class="k silence"></span> silence
+        <span class="k cut"></span> marked for removal
+      </div>
+    </div>
+
+    <div class="row toolbar">
+      <span class="hint" id="cut-selection">drag across the waveform to select · click to seek</span>
+      <span class="grow"></span>
+      <button class="btn ghost sm" id="cut-add" disabled>Remove selection</button>
+      <button class="btn ghost sm" id="cut-silences" title="mark every silence longer than the threshold">Mark long silences</button>
+      <button class="btn ghost sm" id="cut-undo" disabled>Undo</button>
+      <button class="btn ghost sm danger" id="cut-clear" disabled>Clear all</button>
+    </div>
+
+    <video id="cut-video" controls preload="metadata" class="cut-video"></video>
+
+    <div class="table-wrap" id="cut-list-wrap">
+      <table id="cut-list">
+        <thead><tr><th>#</th><th>from</th><th>to</th><th>length</th><th>preview</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="card hidden" id="cut-export">
+    <div class="card-head">
+      <h2><span class="step">3</span> Export</h2>
+      <span class="hint" id="cut-plan"></span>
+    </div>
+    <div class="grid">
+      <label class="wide">Output file
+        <input type="text" id="cut-output" class="mono" placeholder="(defaults to <name>.cut.mp4)">
+      </label>
+      <label>Cut accuracy
+        <div class="segmented" id="cut-mode">
+          <button data-value="precise" class="on" title="exact cut points; re-encodes the video">precise</button>
+          <button data-value="fast" title="no re-encode, but cuts snap to the nearest keyframe">fast</button>
+        </div>
+      </label>
+    </div>
+    <div class="row">
+      <button class="btn primary" id="cut-run">Export cut video →</button>
+      <span class="hint mono" id="cut-job"></span>
+    </div>
+    <div id="cut-error" class="banner hidden"></div>
+    <div id="cut-progress" class="pipeline hidden">
+      <div class="bar"><div id="cut-bar"></div></div>
+      <span id="cut-msg" class="mono small"></span>
+    </div>
+    <div id="cut-result" class="hidden">
+      <div class="tiles" id="cut-tiles"></div>
+      <video id="cut-preview" controls preload="metadata" class="cut-video"></video>
+      <div class="row">
+        <a class="btn ghost sm" id="cut-download" download>download</a>
+        <button class="btn ghost sm" id="cut-send">Use this in Re-voice →</button>
+      </div>
+    </div>
+  </section>
+
+</main>
+
 <dialog id="browser">
   <div class="browser-head">
     <strong id="browser-dir" class="mono"></strong>
@@ -216,5 +309,6 @@
 <div id="toast" class="toast"></div>
 
 <script src="/app.js"></script>
+<script src="/cut.js"></script>
 </body>
 </html>

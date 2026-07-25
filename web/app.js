@@ -161,14 +161,20 @@ $("browser-shortcuts").onclick = (e) => {
   const path = e.target.dataset.path;
   if (path) openBrowser(path);
 };
+// Which field the file browser fills. The Cut tab swaps this before opening the dialog so it
+// can reuse the same picker without duplicating it.
+let browserPick = (path) => {
+  $("input-path").value = path;
+  probeInput();
+};
+
 $("browser-list").onclick = (e) => {
   const li = e.target.closest("li");
   if (!li) return;
   if (li.dataset.dir) return openBrowser(li.dataset.dir);
   if (li.dataset.file) {
-    $("input-path").value = li.dataset.file;
     $("browser").close();
-    probeInput();
+    browserPick(li.dataset.file);
   }
 };
 

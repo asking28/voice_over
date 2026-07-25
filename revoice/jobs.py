@@ -33,6 +33,9 @@ class Job:
     input_path: str
     output_path: str
     options: dict
+    kind: str = "revoice"           # revoice | clip — both share the polling/progress plumbing
+    cuts: list = field(default_factory=list)
+    cut_plan: dict = field(default_factory=dict)
     status: str = "queued"          # queued | running | needs_review | completed | failed
     stage: str = ""
     progress: float = 0.0
@@ -179,6 +182,61 @@ class JobStore:
     def start(self, job: Job, *, full: bool, clone: bool = False) -> None:
         """Stage 1+2, then optionally straight through 3–5."""
         self._spawn(job, self._run_transcribe, full=full, clone=clone)
+
+    # --------------------------------------------------------------------- clip jobs
+
+    def create_clip(
+        self, input_path: str, cuts: list, output_path: str = "", mode: str = "precise"
+    ) -> Job:
+        src = Path(input_path).expanduser()
+        if not src.exists() or not src.is_file():
+            raise FileNotFoundError(f"no such file: {src}")
+
+        job_id = f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-cut{uuid.uuid4().hex[:4]}"
+        job = Job(
+            id=job_id,
+            kind="clip",
+            input_path=str(src),
+            output_path=str(output_path or src.with_name(f"{src.stem}.cut{src.suffix}")),
+            options={"mode": mode},
+            cuts=[[float(a), float(b)] for a, b in cuts],
+        )
+        job.dir.mkdir(parents=True, exist_ok=True)
+        with self._lock:
+            self._jobs[job.id] = job
+        self._persist(job)
+        return job
+
+    def start_clip(self, job: Job) -> None:
+        self._spawn(job, self._run_clip)
+
+    def _run_clip(self, job: Job) -> None:
+        from . import clip  # local import keeps the module graph shallow
+
+        progress = self._progress_cb(job)
+        info = media.probe(job.input_path)
+        self._update(job, media_info=info.to_dict())
+
+        outline = clip.cut(
+            job.input_path,
+            job.output_path,
+            [tuple(c) for c in job.cuts],
+            duration=info.duration,
+            mode=job.options.get("mode", "precise"),
+            progress=progress,
+        )
+        self._update(
+            job,
+            status="completed",
+            stage="cut",
+            progress=1.0,
+            cut_plan=outline,
+            message=(
+                f"removed {outline['removed_seconds']:.1f}s in {len(outline['cuts'])} cut(s) — "
+                f"{outline['source_duration']:.1f}s → {outline['final_duration']:.1f}s"
+            ),
+            persist=True,
+        )
 
     def smooth(self, job: Job, model: str = "") -> None:
         """Run the OpenAI-Agents smoothing pass over the transcript on disk."""
