@@ -205,9 +205,19 @@ proposes three kinds of change:
 
 - **merge** consecutive segments that are one sentence the transcriber split (its main job, and
   it changes no words at all);
-- **rewrite** a segment to remove a stutter or false start — `"all this this data"` → `"all this
-  data"` — or to fix punctuation and the capitalisation of a name;
+- **rewrite** a segment, tagged with what it's fixing — `stutter` (`"all this this data"` →
+  `"all this data"`), `punctuation`, `misheard`, or `grammar`;
 - **delete** a segment the transcriber emitted twice.
+
+**Grammar correction** (the `grammar` checkbox, on by default; `--no-grammar` to disable) fixes
+agreement, articles, prepositions and verb forms where a sentence is actually ungrammatical —
+`"it brings all of this data at one place"` → `"to one place"`, `"Analytica is an EMR agnostic"`
+→ `"is EMR agnostic"`. The instructions bound it tightly, because the failure mode is sliding
+from correcting errors into rewriting prose: keep the speaker's words, register and
+contractions, don't reorder clauses, don't formalise casual phrasing, and leave anything merely
+colloquial alone. When in doubt it does nothing — a wrong "fix" is worse than an uncorrected
+slip, because the speaker is on camera saying something else. Switching it off is enforced at
+the tool, not just in the prompt: `rewrite_segment` rejects `kind="grammar"` outright.
 
 It is told not to rephrase, not to add or drop information, not to touch numbers or names, and
 to keep rewritten text the same length — each line still has to be spoken inside its own slot.

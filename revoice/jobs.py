@@ -238,11 +238,11 @@ class JobStore:
             persist=True,
         )
 
-    def smooth(self, job: Job, model: str = "") -> None:
+    def smooth(self, job: Job, model: str = "", grammar: bool = True) -> None:
         """Run the OpenAI-Agents smoothing pass over the transcript on disk."""
-        self._spawn(job, self._run_smooth, model=model)
+        self._spawn(job, self._run_smooth, model=model, grammar=grammar)
 
-    def _run_smooth(self, job: Job, model: str = "") -> None:
+    def _run_smooth(self, job: Job, model: str = "", grammar: bool = True) -> None:
         # Imported here so the SDK stays an optional dependency of the pipeline.
         try:
             from . import agent
@@ -253,7 +253,7 @@ class JobStore:
         transcript = Transcript.load(job.transcript_path)
         before = len(transcript.segments)
 
-        result = agent.smooth(transcript, model=model, progress=progress)
+        result = agent.smooth(transcript, model=model, grammar=grammar, progress=progress)
         result.transcript.save(job.transcript_path)
         (job.dir / "transcript.srt").write_text(result.transcript.to_srt())
         (job.dir / "smooth_edits.json").write_text(
@@ -271,7 +271,12 @@ class JobStore:
             message=(
                 f"smoothed: {before} → {summary['segments_after']} segments "
                 f"({summary['merges']} merged, {summary['rewrites']} rewritten, "
-                f"{summary['deletes']} deleted)"
+                f"{summary['deletes']} deleted"
+                + (
+                    f"; {', '.join(f'{n} {k}' for k, n in summary['rewrite_kinds'].items())}"
+                    if summary["rewrite_kinds"] else ""
+                )
+                + ")"
             ),
             persist=True,
         )

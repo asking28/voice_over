@@ -168,12 +168,17 @@ def cmd_smooth(args) -> int:
     path = Path(args.transcript).expanduser()
     transcript = Transcript.load(path)
     before = len(transcript.segments)
-    result = agent.smooth(transcript, model=args.model or "", progress=_progress)
+    result = agent.smooth(
+        transcript, model=args.model or "", grammar=args.grammar is not False, progress=_progress
+    )
 
     summary = result.summary()
+    kinds = ", ".join(f"{n} {k}" for k, n in summary["rewrite_kinds"].items())
     print(
         f"\n  {before} → {summary['segments_after']} segments · {summary['merges']} merged, "
-        f"{summary['rewrites']} rewritten, {summary['deletes']} deleted ({summary['model']})",
+        f"{summary['rewrites']} rewritten, {summary['deletes']} deleted ({summary['model']}"
+        f"{', grammar off' if not summary['grammar'] else ''})"
+        + (f"\n  rewrites: {kinds}" if kinds else ""),
         file=sys.stderr,
     )
     for edit in result.edits:
@@ -182,7 +187,11 @@ def cmd_smooth(args) -> int:
         elif edit["op"] == "delete":
             print(f"    delete #{edit['index']}  {edit['reason'][:70]}", file=sys.stderr)
         else:
-            print(f"    #{edit['index']}  {edit['before'][:46]!r}\n         → {edit['text'][:46]!r}", file=sys.stderr)
+            print(
+                f"    #{edit['index']} [{edit.get('kind', '?')}]  {edit['before'][:44]!r}"
+                f"\n         → {edit['text'][:44]!r}",
+                file=sys.stderr,
+            )
 
     out = Path(args.output).expanduser() if args.output else path
     if args.dry_run:
@@ -327,6 +336,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_smooth.add_argument("transcript", help="transcript.json to smooth")
     p_smooth.add_argument("-o", "--output", help="write here instead of in place")
     p_smooth.add_argument("--model", default=None, help="OpenAI model (default gpt-4.1-mini)")
+    p_smooth.add_argument(
+        "--no-grammar", dest="grammar", action="store_false", default=True,
+        help="leave ungrammatical-but-clear speech alone (structure and stutters only)",
+    )
     p_smooth.add_argument("--dry-run", action="store_true", help="show the edits, write nothing")
     p_smooth.set_defaults(func=cmd_smooth)
 

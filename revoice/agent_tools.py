@@ -28,6 +28,7 @@ class SmoothContext:
 
     transcript: Transcript
     edits: list[dict] = field(default_factory=list)
+    grammar: bool = True   # when off, the tool refuses kind="grammar" rewrites outright
 
     def segment(self, index: int):
         return next((s for s in self.transcript.segments if s.index == index), None)
@@ -81,14 +82,21 @@ def merge_segments(ctx: RunContextWrapper[SmoothContext], first: int, last: int,
     return context.record({"op": "merge", "first": first, "last": last, "reason": reason})
 
 
+REWRITE_KINDS = ("stutter", "grammar", "punctuation", "misheard")
+
+
 @function_tool
-def rewrite_segment(ctx: RunContextWrapper[SmoothContext], index: int, text: str, reason: str) -> dict:
+def rewrite_segment(
+    ctx: RunContextWrapper[SmoothContext], index: int, text: str, kind: str, reason: str
+) -> dict:
     """Replace the text of segment `index` with `text`.
 
-    Only for transcription artifacts that a voice would read out loud as a mistake: a stuttered
-    repeat ("all this this data"), a false start, a missing or wrong sentence break, wrong
-    capitalisation of a name, or a word the transcriber clearly misheard where the surrounding
-    text makes the intended word unambiguous.
+    `kind` says which defect you are fixing, and must be one of:
+      stutter     — a stuttered repeat or false start: "all this this data"
+      grammar     — agreement, article, preposition or verb-form error
+      punctuation — a missing or wrong sentence break, or the casing of a name
+      misheard    — a word the transcriber clearly got wrong, where the surrounding
+                    sentence makes the intended word unambiguous
 
     Never rephrase for style, never add or drop information, never change numbers, names,
     dosages or units, and keep the new text about as long as the old — it has to be spoken
@@ -102,9 +110,26 @@ def rewrite_segment(ctx: RunContextWrapper[SmoothContext], index: int, text: str
         return {"recorded": False, "error": "text is empty — use delete_segment instead"}
     if text.strip() == seg.text.strip():
         return {"recorded": False, "error": "identical to the current text — nothing to do"}
-    return context.record(
-        {"op": "rewrite", "index": index, "text": text.strip(), "before": seg.text, "reason": reason}
-    )
+
+    kind = (kind or "").strip().lower()
+    if kind not in REWRITE_KINDS:
+        return {
+            "recorded": False,
+            "error": f"kind must be one of {', '.join(REWRITE_KINDS)} — got {kind!r}",
+        }
+    if kind == "grammar" and not context.grammar:
+        return {
+            "recorded": False,
+            "error": "grammar correction is switched off for this run — leave the segment as is",
+        }
+    return context.record({
+        "op": "rewrite",
+        "index": index,
+        "text": text.strip(),
+        "before": seg.text,
+        "kind": kind,
+        "reason": reason,
+    })
 
 
 @function_tool

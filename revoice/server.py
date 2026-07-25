@@ -345,7 +345,11 @@ def smooth(job_id: str, payload: dict = Body(default={})) -> dict:
     if payload.get("segments") is not None:  # keep the user's pending edits
         put_transcript(job_id, {"segments": payload["segments"]})
     try:
-        STORE.smooth(job, str(payload.get("model") or ""))
+        STORE.smooth(
+            job,
+            str(payload.get("model") or ""),
+            grammar=payload.get("grammar", True) is not False,
+        )
     except RuntimeError as exc:
         raise HTTPException(409, str(exc))
     return job.to_dict(with_log=False)

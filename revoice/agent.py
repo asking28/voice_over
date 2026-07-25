@@ -48,14 +48,16 @@ The transcript came from an automatic transcriber, so it has three recurring def
    This is your most useful tool and it changes no words at all — prefer it.
 
 2. STUTTERS AND FALSE STARTS — "all this this data", "you can bring go inside". A human ear
-   skips these; a synthetic voice reads them out. Fix with rewrite_segment.
+   skips these; a synthetic voice reads them out. Fix with rewrite_segment(kind="stutter").
 
 3. DUPLICATED SEGMENTS — the transcriber occasionally emits the same words twice in a row as
    two segments. Remove the repeat with delete_segment.
 
-Also fix, via rewrite_segment: missing sentence punctuation, wrong capitalisation of product or
-company names, and words the transcriber plainly misheard where the surrounding sentence makes
-the intended word unambiguous.
+Also fix, via rewrite_segment(kind="punctuation"): missing sentence punctuation and wrong
+capitalisation of product or company names. And with kind="misheard": words the transcriber
+plainly got wrong, where the surrounding sentence makes the intended word unambiguous.
+
+{grammar}
 
 Hard limits — these matter more than any improvement you could make:
 - Never add information, never remove information, never rephrase for style.
@@ -68,6 +70,26 @@ Work through the window you are given with get_segments, then make your calls. W
 handled the window, reply with one short line saying what you changed and stop.
 """
 
+# Spoken English is not written English, and most of what sounds "wrong" on the page is simply
+# speech. The risk with grammar correction is that it slides into rewriting prose, so the rule
+# is errors only, and doubt means leave it.
+GRAMMAR_ON = """\
+4. GRAMMAR — fix rewrite_segment(kind="grammar") where a sentence is actually ungrammatical:
+   subject/verb agreement, a missing or wrong article, a wrong preposition, a broken verb form,
+   a singular/plural slip. For example "it brings all of this data at one place" → "to one
+   place"; "Analytica is an EMR agnostic" → "Analytica is EMR agnostic".
+
+   Correct the error and nothing else. Keep the speaker's own words, register and contractions;
+   do not reorder clauses, do not formalise casual phrasing, do not join or split sentences for
+   style. Spoken English is not written English: "so you can pull data from any different data
+   sources" is informal but clear, and should be left alone. If a sentence is merely colloquial,
+   leave it. If you cannot tell what was meant, leave it — a wrong "fix" is worse than an
+   uncorrected slip, because the speaker is on camera saying something else."""
+
+GRAMMAR_OFF = """\
+4. GRAMMAR — do not correct it. Ungrammatical but understandable speech is how people talk;
+   leave it exactly as transcribed. rewrite_segment will reject kind="grammar" on this run."""
+
 
 @dataclass
 class SmoothResult:
@@ -76,14 +98,22 @@ class SmoothResult:
     model: str = ""
     windows: int = 0
 
+    grammar: bool = True
+
     def summary(self) -> dict:
         counts = {"merge": 0, "rewrite": 0, "delete": 0}
+        kinds: dict[str, int] = {}
         for edit in self.edits:
             counts[edit["op"]] = counts.get(edit["op"], 0) + 1
+            if edit["op"] == "rewrite":
+                kind = edit.get("kind", "other")
+                kinds[kind] = kinds.get(kind, 0) + 1
         return {
             "merges": counts["merge"],
             "rewrites": counts["rewrite"],
             "deletes": counts["delete"],
+            "rewrite_kinds": kinds,
+            "grammar": self.grammar,
             "total": len(self.edits),
             "segments_after": len(self.transcript.segments),
             "model": self.model,
@@ -91,10 +121,10 @@ class SmoothResult:
         }
 
 
-def build_agent(model: str = "") -> Agent:
+def build_agent(model: str = "", *, grammar: bool = True) -> Agent:
     return Agent(
         name="Transcript Smoother",
-        instructions=INSTRUCTIONS,
+        instructions=INSTRUCTIONS.format(grammar=GRAMMAR_ON if grammar else GRAMMAR_OFF),
         tools=ALL_TOOLS,
         model=model or DEFAULT_MODEL,
     )
@@ -157,6 +187,7 @@ def smooth(
     *,
     model: str = "",
     window: int = WINDOW,
+    grammar: bool = True,
     progress: Callable[[str, float, str], None] | None = None,
 ) -> SmoothResult:
     """Walk the transcript in windows, letting the agent propose edits, then apply them.
@@ -165,8 +196,8 @@ def smooth(
     """
     require_key("OPENAI_API_KEY")
     working = Transcript.from_dict(transcript.to_dict())  # deep copy via round-trip
-    agent = build_agent(model)
-    context = SmoothContext(transcript=working)
+    agent = build_agent(model, grammar=grammar)
+    context = SmoothContext(transcript=working, grammar=grammar)
 
     total = len(working.segments)
     windows = max(1, -(-total // window))  # ceiling division
@@ -195,6 +226,7 @@ def smooth(
         edits=edits,
         model=agent.model if isinstance(agent.model, str) else str(agent.model),
         windows=windows,
+        grammar=grammar,
     )
     if progress:
         progress("smooth", 1.0, json.dumps(result.summary()))

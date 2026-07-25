@@ -624,12 +624,17 @@ function renderSmoothEdits(job) {
   const line = (e) => {
     if (e.op === "merge") return `<li><b>merged ${e.first}–${e.last}</b> — ${escapeHtml(e.reason || "split sentence")}</li>`;
     if (e.op === "delete") return `<li><b>deleted #${e.index}</b> — ${escapeHtml(e.reason || "duplicate")}</li>`;
-    return `<li><b>#${e.index}</b> <s>${escapeHtml(e.before || "")}</s> → ${escapeHtml(e.text || "")}</li>`;
+    const kind = e.kind ? `<em class="kind ${escapeHtml(e.kind)}">${escapeHtml(e.kind)}</em>` : "";
+    return `<li><b>#${e.index}</b> ${kind} <s>${escapeHtml(e.before || "")}</s> → ${escapeHtml(e.text || "")}</li>`;
   };
+  const kinds = Object.entries(s.rewrite_kinds || {})
+    .map(([k, n]) => `${n} ${k}`)
+    .join(" · ");
   panel.innerHTML =
-    `<strong>Auto-smooth · ${escapeHtml(s.model || "")}</strong>` +
+    `<strong>Auto-smooth · ${escapeHtml(s.model || "")}${s.grammar === false ? " · grammar off" : ""}</strong>` +
     `<span>${s.merges || 0} merged · ${s.rewrites || 0} rewritten · ${s.deletes || 0} deleted → ` +
-    `${s.segments_after || state.segments.length} segments. Review below, then Save edits or Synthesize.</span>` +
+    `${s.segments_after || state.segments.length} segments${kinds ? ` (${escapeHtml(kinds)})` : ""}. ` +
+    `Review below, then Save edits or Synthesize.</span>` +
     `<ul>${edits.map(line).join("")}</ul>`;
   panel.classList.remove("hidden");
 }
@@ -664,7 +669,7 @@ $("btn-smooth").onclick = async () => {
     // send the pending edits along so the agent works on what's on screen
     await api(`/api/jobs/${state.jobId}/smooth`, {
       method: "POST",
-      body: JSON.stringify({ segments: state.segments }),
+      body: JSON.stringify({ segments: state.segments, grammar: $("opt-grammar").checked }),
     });
     state.status = "running";       // force poll() to notice the transition back
     state.smoothing = true;

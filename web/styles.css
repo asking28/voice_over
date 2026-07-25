@@ -311,6 +311,14 @@ label.inline .tiny { width: 68px; font-family: var(--mono); font-size: 12px; pad
 .smooth-report ul { margin: 4px 0 0; padding-left: 18px; max-height: 220px; overflow: auto; }
 .smooth-report li { font-size: 12.5px; line-height: 1.6; color: var(--text); }
 .smooth-report s { color: var(--muted); }
+.smooth-report .kind {
+  font-style: normal; font-size: 10px; text-transform: uppercase; letter-spacing: .05em;
+  padding: 1px 6px; border-radius: 5px; margin-right: 4px;
+  background: color-mix(in srgb, var(--muted) 22%, transparent); color: var(--muted);
+}
+.smooth-report .kind.grammar { background: color-mix(in srgb, var(--warn) 22%, transparent); color: var(--warn); }
+.smooth-report .kind.stutter { background: color-mix(in srgb, var(--accent) 20%, transparent); color: var(--accent); }
+.smooth-report .kind.misheard { background: color-mix(in srgb, var(--err) 20%, transparent); color: var(--err); }
 
 .voice-id {
   display: block; margin-top: 6px; font-family: var(--mono); font-size: 11.5px;
