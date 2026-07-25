@@ -233,6 +233,29 @@ def put_transcript(job_id: str, payload: dict = Body(...)) -> dict:
     return edited.to_dict(with_words=False)
 
 
+@app.post("/api/jobs/{job_id}/smooth")
+def smooth(job_id: str, payload: dict = Body(default={})) -> dict:
+    """Hand the transcript to the smoothing agent (OpenAI Agents SDK).
+
+    Runs in the background like any other stage; the editor polls and reloads the transcript
+    when it lands, so the proposed edits arrive as reviewable rows rather than a fait accompli.
+    """
+    job = STORE.get(job_id)
+    if not job:
+        raise HTTPException(404, "no such job")
+    if not job.transcript_path.exists():
+        raise HTTPException(400, "transcribe first")
+    if not env("OPENAI_API_KEY"):
+        raise HTTPException(400, "OPENAI_API_KEY is not set in .env")
+    if payload.get("segments") is not None:  # keep the user's pending edits
+        put_transcript(job_id, {"segments": payload["segments"]})
+    try:
+        STORE.smooth(job, str(payload.get("model") or ""))
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc))
+    return job.to_dict(with_log=False)
+
+
 @app.post("/api/jobs/{job_id}/synthesize")
 def synthesize(job_id: str, payload: dict = Body(default={})) -> dict:
     """Run stages 3–5 against the transcript on disk."""

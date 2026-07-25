@@ -161,6 +161,38 @@ def cmd_voices(args) -> int:
     return 0
 
 
+def cmd_smooth(args) -> int:
+    """Agent pass over a transcript: fuse split sentences, clean stutters, drop duplicates."""
+    from . import agent  # optional dependency — only imported when actually used
+
+    path = Path(args.transcript).expanduser()
+    transcript = Transcript.load(path)
+    before = len(transcript.segments)
+    result = agent.smooth(transcript, model=args.model or "", progress=_progress)
+
+    summary = result.summary()
+    print(
+        f"\n  {before} → {summary['segments_after']} segments · {summary['merges']} merged, "
+        f"{summary['rewrites']} rewritten, {summary['deletes']} deleted ({summary['model']})",
+        file=sys.stderr,
+    )
+    for edit in result.edits:
+        if edit["op"] == "merge":
+            print(f"    merge {edit['first']}–{edit['last']}  {edit['reason'][:70]}", file=sys.stderr)
+        elif edit["op"] == "delete":
+            print(f"    delete #{edit['index']}  {edit['reason'][:70]}", file=sys.stderr)
+        else:
+            print(f"    #{edit['index']}  {edit['before'][:46]!r}\n         → {edit['text'][:46]!r}", file=sys.stderr)
+
+    out = Path(args.output).expanduser() if args.output else path
+    if args.dry_run:
+        print("\n  --dry-run: nothing written", file=sys.stderr)
+        return 0
+    result.transcript.save(out)
+    print(out)
+    return 0
+
+
 def cmd_preview(args) -> int:
     """Hear one line in the chosen voice before committing a whole video to it."""
     import subprocess
@@ -288,6 +320,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_voices.add_argument("--provider", choices=["deepgram", "cartesia"], default="deepgram")
     p_voices.add_argument("--json", action="store_true")
     p_voices.set_defaults(func=cmd_voices)
+
+    p_smooth = sub.add_parser(
+        "smooth", help="agent pass: fuse split sentences, clean stutters, drop duplicates"
+    )
+    p_smooth.add_argument("transcript", help="transcript.json to smooth")
+    p_smooth.add_argument("-o", "--output", help="write here instead of in place")
+    p_smooth.add_argument("--model", default=None, help="OpenAI model (default gpt-4.1-mini)")
+    p_smooth.add_argument("--dry-run", action="store_true", help="show the edits, write nothing")
+    p_smooth.set_defaults(func=cmd_smooth)
 
     p_prev = sub.add_parser("preview", help="speak one line so you can audition a voice")
     p_prev.add_argument("--text", help="what to say (default: a stock sample line)")

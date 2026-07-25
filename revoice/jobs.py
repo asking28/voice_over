@@ -41,6 +41,8 @@ class Job:
     log: list[dict] = field(default_factory=list)
     media_info: dict = field(default_factory=dict)
     summary: dict = field(default_factory=dict)
+    smooth_summary: dict = field(default_factory=dict)
+    smooth_edits: list = field(default_factory=list)
     voice_note: str = ""            # e.g. "cloned voice <id>"
     created_at: str = field(default_factory=_now)
     updated_at: str = field(default_factory=_now)
@@ -177,6 +179,44 @@ class JobStore:
     def start(self, job: Job, *, full: bool, clone: bool = False) -> None:
         """Stage 1+2, then optionally straight through 3–5."""
         self._spawn(job, self._run_transcribe, full=full, clone=clone)
+
+    def smooth(self, job: Job, model: str = "") -> None:
+        """Run the OpenAI-Agents smoothing pass over the transcript on disk."""
+        self._spawn(job, self._run_smooth, model=model)
+
+    def _run_smooth(self, job: Job, model: str = "") -> None:
+        # Imported here so the SDK stays an optional dependency of the pipeline.
+        try:
+            from . import agent
+        except SystemExit as exc:
+            raise RuntimeError(str(exc)) from None
+
+        progress = self._progress_cb(job)
+        transcript = Transcript.load(job.transcript_path)
+        before = len(transcript.segments)
+
+        result = agent.smooth(transcript, model=model, progress=progress)
+        result.transcript.save(job.transcript_path)
+        (job.dir / "transcript.srt").write_text(result.transcript.to_srt())
+        (job.dir / "smooth_edits.json").write_text(
+            json.dumps({"summary": result.summary(), "edits": result.edits}, indent=2)
+        )
+
+        summary = result.summary()
+        self._update(
+            job,
+            status="needs_review",
+            stage="smooth",
+            progress=1.0,
+            smooth_summary=summary,
+            smooth_edits=result.edits,
+            message=(
+                f"smoothed: {before} → {summary['segments_after']} segments "
+                f"({summary['merges']} merged, {summary['rewrites']} rewritten, "
+                f"{summary['deletes']} deleted)"
+            ),
+            persist=True,
+        )
 
     def resynthesize(self, job: Job, options: dict | None = None) -> None:
         """Stages 3–5 against the transcript currently on disk (possibly edited)."""

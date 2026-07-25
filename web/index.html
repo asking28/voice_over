@@ -147,11 +147,14 @@
     <div class="row toolbar">
       <input type="search" id="segment-filter" placeholder="filter segments…" class="grow">
       <button class="btn ghost sm" id="btn-automerge" title="fuse neighbours separated by almost no pause">Auto-merge</button>
+      <button class="btn ghost sm" id="btn-smooth"
+              title="AI pass: fuse split sentences, clean stutters and duplicate lines — content unchanged">✨ Auto-smooth</button>
       <button class="btn ghost sm" id="btn-save-transcript">Save edits</button>
       <a class="btn ghost sm" id="dl-json" download>.json</a>
       <a class="btn ghost sm" id="dl-srt" download>.srt</a>
       <button class="btn primary" id="btn-synthesize">Synthesize &amp; mux →</button>
     </div>
+    <div id="smooth-report" class="smooth-report hidden"></div>
     <p class="hint pad">
       Edit any line — fix a misheard word, rewrite a sentence, or tick <b>skip</b> to leave that slot
       silent. Each segment is re-spoken into its own <b>slot</b>, so the pauses between them and the

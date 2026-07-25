@@ -158,6 +158,45 @@ a full fade-out plus fade-in — an audible dip inside what the listener hears a
 Fades are now applied at placement time, where the surrounding gaps are known: a full
 `--fade-ms` against silence, a 2 ms click-guard against a neighbour.
 
+## ✨ Auto-smooth — the agent pass
+
+`--merge-gap` fuses split sentences by a pure timing rule, which catches most of them but is
+blind to what the words say. The **Auto-smooth** button hands the transcript to an agent built
+on the [OpenAI Agents SDK](https://openai.github.io/openai-agents-python/) that reads it and
+proposes three kinds of change:
+
+- **merge** consecutive segments that are one sentence the transcriber split (its main job, and
+  it changes no words at all);
+- **rewrite** a segment to remove a stutter or false start — `"all this this data"` → `"all this
+  data"` — or to fix punctuation and the capitalisation of a name;
+- **delete** a segment the transcriber emitted twice.
+
+It is told not to rephrase, not to add or drop information, not to touch numbers or names, and
+to keep rewritten text the same length — each line still has to be spoken inside its own slot.
+
+```
+revoice/agent_tools.py   the @function_tools: get_segments, merge_segments,
+                         rewrite_segment, delete_segment — plus the SmoothContext
+                         injected into each (mirrors the tools.py/skill.py split)
+revoice/agent.py         the Agent + Runner, the instructions, and apply_edits()
+```
+
+Nothing mutates while the agent runs: the tools *record* edits against the original segment
+indices and `apply_edits()` applies them in one deterministic pass afterwards, so indices stay
+stable across the whole run. The transcript is walked in windows of 14 segments.
+
+The result lands in the editor as a change list plus rewritten rows — **review it before you
+synthesize.** The edits are the model's proposals, not verified facts.
+
+```bash
+python3 -m revoice.cli smooth work/talk/transcript.json --dry-run   # show the edits
+python3 -m revoice.cli smooth work/talk/transcript.json             # apply in place
+```
+
+Needs `OPENAI_API_KEY` in `.env`; model via `--model` or `REVOICE_AGENT_MODEL`
+(default `gpt-4.1-mini`). On the 6-minute demo it made 25 merges and 3 rewrites across
+7 windows, taking 86 segments to 52.
+
 ## Editing structure, not just text
 
 Beyond rewriting a line or ticking **skip**, the transcript panel lets you change the segment

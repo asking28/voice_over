@@ -245,6 +245,18 @@ td input.tiny { width: 74px; font-family: var(--mono); font-size: 12px; padding:
 .banner .muted { color: var(--muted); }
 .banner a { color: var(--accent); }
 
+.smooth-report {
+  display: grid; gap: 6px; margin: 12px 0 4px; padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--accent-2) 45%, var(--line));
+  background: color-mix(in srgb, var(--accent-2) 8%, transparent);
+  border-radius: 9px; font-size: 13px;
+}
+.smooth-report strong { color: var(--accent-2); }
+.smooth-report span { color: var(--muted); font-size: 12.5px; }
+.smooth-report ul { margin: 4px 0 0; padding-left: 18px; max-height: 220px; overflow: auto; }
+.smooth-report li { font-size: 12.5px; line-height: 1.6; color: var(--text); }
+.smooth-report s { color: var(--muted); }
+
 .voice-id {
   display: block; margin-top: 6px; font-family: var(--mono); font-size: 11.5px;
   color: var(--accent); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;

@@ -8,6 +8,10 @@ uvicorn[standard]>=0.32
 # Optional everywhere: without it, config.py falls back to its own .env parser.
 python-dotenv>=1.0
 
+# Only for the transcript-smoothing agent (revoice/agent.py, the ✨ Auto-smooth button and
+# `revoice smooth`). Needs OPENAI_API_KEY. Everything else runs without it.
+openai-agents>=0.18
+
 # NOT installable with pip — ffmpeg and ffprobe must be on PATH:
 #   macOS   brew install ffmpeg
 #   Debian  sudo apt install ffmpeg

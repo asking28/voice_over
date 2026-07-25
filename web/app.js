@@ -388,12 +388,23 @@ async function poll() {
     showRunError(job.error || "job failed");
     $("btn-transcribe").disabled = $("btn-runall").disabled = false;
     $("btn-synthesize").disabled = false;
+    state.smoothing = false;
+    $("btn-smooth").disabled = false;
+    $("btn-smooth").textContent = "✨ Auto-smooth";
     if (!state.segments.length) await loadTranscript().catch(() => {});
   } else if (job.status === "needs_review") {
     stopPolling();
     await loadTranscript();
     $("btn-transcribe").disabled = $("btn-runall").disabled = false;
-    toast("transcript ready — edit it, then synthesize");
+    if (state.smoothing) {
+      state.smoothing = false;
+      $("btn-smooth").disabled = false;
+      $("btn-smooth").textContent = "✨ Auto-smooth";
+      renderSmoothEdits(job);
+      toast(job.message || "smoothed");
+    } else {
+      toast("transcript ready — edit it, then synthesize");
+    }
   } else if (job.status === "completed") {
     stopPolling();
     if (previous !== "completed") {
@@ -407,6 +418,13 @@ async function poll() {
 }
 
 function renderPipeline(job) {
+  if (job.stage === "smooth") {
+    // Not one of the five pipeline stages — it edits the transcript between 2 and 3.
+    $("bar-fill").style.width = `${((job.progress || 0) * 100).toFixed(1)}%`;
+    $("stage-msg").textContent = `smoothing — ${job.message || ""}`;
+    $("log").textContent = (job.log || []).map((l) => `${l.t.slice(11)}  ${l.stage.padEnd(11)} ${l.message}`).join("\n");
+    return;
+  }
   const index = STAGES.indexOf(job.stage);
   document.querySelectorAll(".stage").forEach((el, i) => {
     el.classList.toggle("active", i === index && job.status === "running");
@@ -587,6 +605,29 @@ $("segments").addEventListener("click", async (e) => {
   await speakPreview(seg.text, button);  // previews the edited text, not what's on disk
 });
 
+/** Show what the agent actually changed, so the pass is reviewable rather than a black box. */
+function renderSmoothEdits(job) {
+  const panel = $("smooth-report");
+  const edits = job.smooth_edits || [];
+  const s = job.smooth_summary || {};
+  if (!edits.length) {
+    panel.innerHTML = `<strong>Auto-smooth</strong><span>No changes proposed — the transcript already reads cleanly.</span>`;
+    panel.classList.remove("hidden");
+    return;
+  }
+  const line = (e) => {
+    if (e.op === "merge") return `<li><b>merged ${e.first}–${e.last}</b> — ${escapeHtml(e.reason || "split sentence")}</li>`;
+    if (e.op === "delete") return `<li><b>deleted #${e.index}</b> — ${escapeHtml(e.reason || "duplicate")}</li>`;
+    return `<li><b>#${e.index}</b> <s>${escapeHtml(e.before || "")}</s> → ${escapeHtml(e.text || "")}</li>`;
+  };
+  panel.innerHTML =
+    `<strong>Auto-smooth · ${escapeHtml(s.model || "")}</strong>` +
+    `<span>${s.merges || 0} merged · ${s.rewrites || 0} rewritten · ${s.deletes || 0} deleted → ` +
+    `${s.segments_after || state.segments.length} segments. Review below, then Save edits or Synthesize.</span>` +
+    `<ul>${edits.map(line).join("")}</ul>`;
+  panel.classList.remove("hidden");
+}
+
 async function saveTranscript() {
   const payload = { segments: state.segments };
   const data = await api(`/api/jobs/${state.jobId}/transcript`, {
@@ -606,6 +647,27 @@ $("btn-save-transcript").onclick = async () => {
     toast("transcript saved");
   } catch (e) {
     toast(e.message, true);
+  }
+};
+
+$("btn-smooth").onclick = async () => {
+  const button = $("btn-smooth");
+  button.disabled = true;
+  button.textContent = "✨ smoothing…";
+  try {
+    // send the pending edits along so the agent works on what's on screen
+    await api(`/api/jobs/${state.jobId}/smooth`, {
+      method: "POST",
+      body: JSON.stringify({ segments: state.segments }),
+    });
+    state.status = "running";       // force poll() to notice the transition back
+    state.smoothing = true;
+    startPolling();
+  } catch (e) {
+    toast(e.message, true);
+    showRunError(e.message);
+    button.disabled = false;
+    button.textContent = "✨ Auto-smooth";
   }
 };
 
