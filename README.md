@@ -135,6 +135,43 @@ nothing. `transcript.srt` is written alongside it.
 
 ---
 
+## Making the seams smooth
+
+Three things make a re-voiced track sound stitched together, and the pipeline addresses each:
+
+**1. Sentences split across segments.** Deepgram starts a new utterance at every pause, so one
+sentence spoken without a breath comes back as two or three. Synthesized separately, each gets
+its own sentence-final fall and they butt together audibly. After transcription, neighbours
+closer than `--merge-gap` (0.18 s) are **fused back into one segment**, so one spoken sentence
+is one TTS call. On a 6-minute demo this collapsed 86 segments into 52 — which also halved the
+time-stretching (37 → 19 stretched) and cut max drift from 40 ms to 0 ms.
+
+**2. Digital silence in the pauses.** An assembled canvas is mathematically silent between
+clips, so the room drops dead and snaps back — the most artificial part of a naive re-voice.
+The pipeline lifts the **quietest half-second out of your own recording** and tiles it under
+the whole track (alternating forward/reversed copies so the loop points don't click), at the
+level it measured. Pauses now sit at the recording's own noise floor instead of zero. Turn it
+off with `--room-tone 0`; it self-disables if the source has no quiet passage to sample.
+
+**3. Fades in the wrong places.** A clip that butts straight against its neighbour used to get
+a full fade-out plus fade-in — an audible dip inside what the listener hears as one sentence.
+Fades are now applied at placement time, where the surrounding gaps are known: a full
+`--fade-ms` against silence, a 2 ms click-guard against a neighbour.
+
+## Editing structure, not just text
+
+Beyond rewriting a line or ticking **skip**, the transcript panel lets you change the segment
+structure itself:
+
+- **⇧ merge** folds a segment into the one above — one slot, one TTS call, no seam. Use it
+  wherever the **pause** column reads `0.00s`.
+- **✕ delete** drops a segment; its slot simply stays silent. Handy for the duplicate lines
+  STT sometimes emits.
+- **Auto-merge** does the whole pass at once, using the same rule as the pipeline.
+
+All of it is just the JSON — merging is one segment with a wider `start`..`end`, deleting is a
+missing entry. Edit the file by hand and you get the same result.
+
 ## How the timing is preserved
 
 1. The canvas length comes from the **frame count of the extracted PCM**, not from container
@@ -179,6 +216,8 @@ that path is verified sample-for-sample.
 | `--max-tempo` | `1.6` | hard cap on speed-up before a segment is allowed to run long |
 | `--min-tempo` | `0.75` | hard cap on slow-down (`exact` mode only) |
 | `--utt-split` | `0.6` | a gap this long (s) starts a new segment |
+| `--merge-gap` | `0.18` | ...then fuse neighbours closer than this back together (`0` = off) |
+| `--room-tone` | `0.9` | blend the source's own noise floor under the track (`0` = off) |
 | `--max-segment-chars` | `320` | longer utterances are split at sentence boundaries |
 | `--workers` | `6` | parallel Cartesia requests |
 | `--no-adaptive` | off | never re-request a faster take; time-stretch only |

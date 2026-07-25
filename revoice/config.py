@@ -75,6 +75,8 @@ class Options:
 
     # --- transcription / segmentation
     utt_split: float = 0.6              # a gap this long (s) starts a new utterance
+    merge_gap: float = 0.18             # ...then fuse neighbours closer than this back together,
+                                        # so one spoken sentence stays one TTS call (0 = off)
     max_segment_chars: int = 320        # split longer utterances at sentence boundaries
     filler_words: bool = True           # keep "uh"/"um" so pause structure stays honest
     diarize: bool = False               # tag segments with a speaker id
@@ -90,7 +92,11 @@ class Options:
                                         # exact:   stretch every segment to fill its slot
     max_tempo: float = 1.6              # hard cap on speed-up (higher = more chipmunk)
     min_tempo: float = 0.75             # hard cap on slow-down (exact mode only)
-    fade_ms: int = 8                    # de-click fade on each placed segment
+    fade_ms: int = 10                   # fade on a segment that starts/ends against silence
+    edge_fade_ms: float = 2.0           # ...and against a neighbour: click-guard only
+    adjacent_gap: float = 0.025         # closer than this counts as "against a neighbour"
+    room_tone: float = 0.9              # blend the recording's own noise floor under the new
+                                        # track so pauses aren't digital silence (0 = off)
     min_gap: float = 0.03               # minimum silence kept between two segments
 
     # --- output

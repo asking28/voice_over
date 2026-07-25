@@ -174,6 +174,52 @@ class Transcript:
 
     # ---------------------------------------------------------------- housekeeping
 
+    def merge_range(self, first: int, last: int) -> "Transcript":
+        """Fuse segments [first..last] into one slot spanning first.start → last.end.
+
+        Deepgram splits on pauses, which means a sentence delivered without a breath comes
+        back as several utterances. Speaking those separately gives each one its own
+        sentence-final fall and a seam where they butt together; merging them hands the whole
+        thing to the model as one line, which is what it actually was.
+        """
+        if not (0 <= first < last < len(self.segments)):
+            return self
+        group = self.segments[first : last + 1]
+        head = group[0]
+        head.end = group[-1].end
+        head.text = " ".join(s.text for s in group if s.text).strip()
+        head.words = [w for s in group for w in s.words]
+        head.skip = all(s.skip for s in group)
+        head.confidence = min((s.confidence for s in group if s.confidence), default=head.confidence)
+        del self.segments[first + 1 : last + 1]
+        return self.normalize()
+
+    def merge_close(self, max_gap: float) -> int:
+        """Merge every run of adjacent segments separated by <= max_gap seconds.
+
+        Returns the number of segments removed. Runs back-to-front so indices stay valid.
+        """
+        if max_gap <= 0 or len(self.segments) < 2:
+            return 0
+        before = len(self.segments)
+        i = len(self.segments) - 1
+        while i > 0:
+            start = i
+            while start > 0 and (self.segments[start].start - self.segments[start - 1].end) <= max_gap:
+                start -= 1
+            if start < i:
+                self.merge_range(start, i)
+            i = start - 1
+        return before - len(self.segments)
+
+    def delete(self, index: int) -> "Transcript":
+        """Drop a segment entirely. Its slot simply stays silent."""
+        match = next((i for i, s in enumerate(self.segments) if s.index == index), None)
+        if match is not None:
+            del self.segments[match]
+            self.normalize()
+        return self
+
     def normalize(self) -> "Transcript":
         """Re-sort, clamp to the media bounds, and re-index. Run after user edits — the web
         editor lets people change start/end, and stage 3 assumes an ordered, in-range list."""

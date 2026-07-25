@@ -80,6 +80,12 @@
       <label>Max speed-up <input type="number" id="opt-max-tempo" step="0.05" min="1" max="3"></label>
       <label>Min slow-down <input type="number" id="opt-min-tempo" step="0.05" min="0.3" max="1"></label>
       <label>New-segment gap (s) <input type="number" id="opt-utt-split" step="0.1" min="0.1" max="3"></label>
+      <label title="neighbours closer than this are fused into one TTS call — fewer seams">
+        Auto-merge gap (s) <input type="number" id="opt-merge-gap" step="0.02" min="0" max="1">
+      </label>
+      <label title="blend the recording's own noise floor under the new track so pauses aren't dead silence">
+        Room tone <input type="number" id="opt-room-tone" step="0.1" min="0" max="1.5">
+      </label>
       <label>Max chars / segment <input type="number" id="opt-max-chars" step="20" min="60"></label>
       <label>Parallel requests <input type="number" id="opt-workers" step="1" min="1" max="16"></label>
       <label>Sample rate <input type="number" id="opt-sample-rate" step="100"></label>
@@ -139,6 +145,7 @@
     </div>
     <div class="row toolbar">
       <input type="search" id="segment-filter" placeholder="filter segments…" class="grow">
+      <button class="btn ghost sm" id="btn-automerge" title="fuse neighbours separated by almost no pause">Auto-merge</button>
       <button class="btn ghost sm" id="btn-save-transcript">Save edits</button>
       <a class="btn ghost sm" id="dl-json" download>.json</a>
       <a class="btn ghost sm" id="dl-srt" download>.srt</a>
@@ -155,6 +162,7 @@
           <tr>
             <th>#</th><th>start</th><th>slot</th><th>pause</th>
             <th class="text-col">text</th><th>skip</th><th title="hear this line">▶</th>
+            <th title="merge into the segment above / delete">edit</th>
           </tr>
         </thead>
         <tbody></tbody>

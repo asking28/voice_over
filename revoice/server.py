@@ -218,12 +218,14 @@ def put_transcript(job_id: str, payload: dict = Body(...)) -> dict:
         raise HTTPException(404, "transcript not ready yet")
 
     stored = Transcript.load(job.transcript_path)
-    words_by_index = {s.index: s.words for s in stored.segments}
+    # Keyed by span, not index: merging and deleting renumber everything, so an index-keyed
+    # lookup would staple the wrong words onto the wrong segment.
+    words_by_span = {(round(s.start, 3), round(s.end, 3)): s.words for s in stored.segments}
 
     edited = Transcript.from_dict({**stored.to_dict(), "segments": payload.get("segments", [])})
     for segment in edited.segments:
         if not segment.words:
-            segment.words = words_by_index.get(segment.index, [])
+            segment.words = words_by_span.get((round(segment.start, 3), round(segment.end, 3)), [])
     edited.duration = stored.duration          # canvas length is not user-editable
     edited.audio_path = stored.audio_path
     edited.normalize().save(job.transcript_path)

@@ -74,6 +74,8 @@ class SynthesisReport:
     api_calls: int = 0
     cache_hits: int = 0
     seconds: float = 0.0
+    options: dict = field(default_factory=dict)  # which voice/provider produced this track
+    room_tone: str = ""
 
     def summary(self) -> dict:
         placed = [s for s in self.segments if not s.skipped and not s.error]
@@ -99,7 +101,15 @@ class SynthesisReport:
     def to_dict(self) -> dict:
         return {
             "track_path": self.track_path,
+            "voice": {
+                "provider": self.options.get("tts_provider", ""),
+                "voice_id": self.options.get("voice_id", ""),
+                "model": self.options.get("tts_model", ""),
+                "language": self.options.get("language", ""),
+            },
+            "room_tone": self.room_tone,
             "summary": self.summary(),
+            "options": self.options,
             "segments": [s.to_dict() for s in self.segments],
         }
 
@@ -158,6 +168,13 @@ def transcribe_stage(
         utt_split=opts.utt_split,
         max_segment_chars=opts.max_segment_chars,
     )
+
+    # Deepgram splits on pauses, so a sentence said without a breath comes back in pieces.
+    # Fusing those back together keeps one spoken sentence as one TTS call — fewer seams.
+    fused = transcript.merge_close(opts.merge_gap)
+    if fused:
+        progress("transcribe", 0.9, f"fused {fused} segments split across short pauses")
+
     transcript.save(work / "transcript.json")
     (work / "transcript.srt").write_text(transcript.to_srt())
 
@@ -262,8 +279,45 @@ def _render(
 
     result.final_seconds = audio.duration_of(pcm, opts.sample_rate)
     result.overflow = max(0.0, result.final_seconds - target)
-    pcm = audio.apply_fades(pcm, opts.sample_rate, opts.fade_ms)
+    # Fades are applied at placement time, where the neighbouring gaps are known.
     return pcm, result
+
+
+def _lay_room_tone(canvas: audio.Canvas, transcript: Transcript, opts: Options, progress: Progress) -> str:
+    """Blend the recording's own noise floor underneath the whole track.
+
+    Without this, every pause is digital silence: the room drops dead between sentences and
+    then snaps back, which is the single most artificial-sounding part of a re-voiced track.
+    We lift the quietest half-second out of the source and tile it under everything, so the
+    floor stays continuous exactly as it does in the original recording.
+    """
+    if opts.room_tone <= 0:
+        return "off"
+    try:
+        source, source_rate = audio.read_wav(transcript.audio_path)
+    except (OSError, ValueError):
+        return "unavailable"
+
+    window, level = audio.quietest_window(source, source_rate, seconds=0.5)
+    if not window:
+        return "source too short"
+    # If the quietest half-second still has real content in it, there is no true room tone to
+    # borrow and tiling it would loop audible material under the speech.
+    if level > 600:
+        progress("synthesize", 1.0, f"skipping room tone — noise floor too loud (rms {level:.0f})")
+        return f"skipped (floor rms {level:.0f})"
+
+    scratch = Path(transcript.audio_path).parent / "scratch"
+    scratch.mkdir(parents=True, exist_ok=True)
+    raw, resampled = scratch / "tone_src.wav", scratch / "tone.wav"
+    audio.write_wav(raw, window, source_rate)
+    media.normalize_wav(raw, resampled, sample_rate=opts.sample_rate)
+    tone, _ = audio.read_wav(resampled)
+
+    bed = audio.tile(tone, canvas.total_frames)
+    canvas.buffer = bytearray(audio.mix(bytes(canvas.buffer), bed, opts.room_tone))
+    progress("synthesize", 1.0, f"room tone laid in (floor rms {level:.0f})")
+    return f"floor rms {level:.0f} at {opts.room_tone:.2f}x"
 
 
 def _match_loudness(pcm: bytes, seg: Segment, source_pcm: bytes, opts: Options) -> bytes:
@@ -365,17 +419,30 @@ def synthesize_stage(
             match_loudness = False
 
     min_gap_frames = int(opts.min_gap * opts.sample_rate)
+    adjacent = opts.adjacent_gap
     cursor = 0
-    for seg in transcript.segments:
+    order = [s for s in transcript.segments if rendered.get(s.index)]
+    for position, seg in enumerate(order):
         result = results[seg.index]
-        pcm = rendered.get(seg.index, b"")
-        if not pcm:
-            continue
+        pcm = rendered[seg.index]
         if match_loudness and source_pcm:
             pcm = _match_loudness(pcm, seg, source_pcm, opts)
 
         want = int(round(seg.start * opts.sample_rate))
         at = want if cursor == 0 else max(want, cursor + min_gap_frames)
+
+        # A clip butting against its neighbour gets a click-guard, not a fade: a full fade
+        # there is audible as a dip inside what the listener hears as one sentence.
+        gap_before = (at - cursor) / opts.sample_rate if position else seg.start
+        following = order[position + 1] if position + 1 < len(order) else None
+        gap_after = (following.start - seg.end) if following else (transcript.duration - seg.end)
+        pcm = audio.apply_fades(
+            pcm,
+            opts.sample_rate,
+            fade_in_ms=opts.fade_ms if gap_before > adjacent else opts.edge_fade_ms,
+            fade_out_ms=opts.fade_ms if gap_after > adjacent else opts.edge_fade_ms,
+        )
+
         start_frame, end_frame = canvas.place(at, pcm)
         cursor = end_frame
         result.placed_start = start_frame / opts.sample_rate
@@ -383,6 +450,7 @@ def synthesize_stage(
         result.final_seconds = (end_frame - start_frame) / opts.sample_rate
 
     track = work / "revoiced.wav"
+    bed_note = _lay_room_tone(canvas, transcript, opts, progress)
     canvas.to_wav(track)
     shutil.rmtree(scratch, ignore_errors=True)
 
@@ -391,6 +459,8 @@ def synthesize_stage(
     report.api_calls = state["api_calls"]
     report.cache_hits = state["cache_hits"]
     report.seconds = time.time() - started
+    report.options = opts.to_dict()
+    report.room_tone = bed_note
     (work / "report.json").write_text(json.dumps(report.to_dict(), indent=2))
 
     progress("synthesize", 1.0, f"track built: {report.duration:.2f}s")

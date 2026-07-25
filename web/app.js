@@ -83,6 +83,8 @@ function applyDefaults(d) {
   $("opt-max-tempo").value = d.max_tempo ?? 1.6;
   $("opt-min-tempo").value = d.min_tempo ?? 0.75;
   $("opt-utt-split").value = d.utt_split ?? 0.6;
+  $("opt-merge-gap").value = d.merge_gap ?? 0.18;
+  $("opt-room-tone").value = d.room_tone ?? 0.9;
   $("opt-max-chars").value = d.max_segment_chars ?? 320;
   $("opt-workers").value = d.workers ?? 6;
   $("opt-sample-rate").value = d.sample_rate ?? 44100;
@@ -281,6 +283,8 @@ function collectOptions() {
     max_tempo: $("opt-max-tempo").value,
     min_tempo: $("opt-min-tempo").value,
     utt_split: $("opt-utt-split").value,
+    merge_gap: $("opt-merge-gap").value,
+    room_tone: $("opt-room-tone").value,
     max_segment_chars: $("opt-max-chars").value,
     workers: $("opt-workers").value,
     sample_rate: $("opt-sample-rate").value,
@@ -421,8 +425,10 @@ async function loadTranscript() {
   updateStats(data.stats);
   $("dl-json").href = `/api/jobs/${state.jobId}/file/transcript?download=true`;
   $("dl-srt").href = `/api/jobs/${state.jobId}/file/srt?download=true`;
-  renderSegments();
+  // Reveal before rendering: inside a display:none subtree every measurement reads 0, so
+  // the textarea auto-sizing would collapse every row to zero height.
   $("card-transcript").classList.remove("hidden");
+  renderSegments();
   $("card-transcript").scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
@@ -459,10 +465,18 @@ function renderSegments() {
         <td><textarea data-field="text" rows="1">${escapeHtml(seg.text)}</textarea></td>
         <td><input type="checkbox" data-field="skip" ${seg.skip ? "checked" : ""}></td>
         <td><button class="btn link play" data-play="${seg.index}" title="hear this line in the chosen voice">▶</button></td>
+        <td class="rowops">
+          <button class="btn link" data-merge="${seg.index}" ${i === 0 ? "disabled" : ""}
+                  title="merge into the segment above (one TTS call, no seam)">⇧</button>
+          <button class="btn link del" data-del="${seg.index}" title="delete — the slot stays silent">✕</button>
+        </td>
       </tr>`;
     })
     .join("");
+  // Second pass once column widths settle. rAF doesn't fire in a backgrounded tab, so this
+  // is a refinement, not the thing correctness depends on — the caller reveals the card first.
   body.querySelectorAll("textarea").forEach(autoGrow);
+  requestAnimationFrame(() => body.querySelectorAll("textarea").forEach(autoGrow));
 }
 
 function escapeHtml(s) {
@@ -470,7 +484,10 @@ function escapeHtml(s) {
 }
 function autoGrow(el) {
   el.style.height = "auto";
-  el.style.height = `${el.scrollHeight}px`;
+  // box-sizing is border-box globally, so `height` covers the border too — scrollHeight
+  // already includes padding but not the border, hence the delta.
+  const border = el.offsetHeight - el.clientHeight;
+  el.style.height = `${el.scrollHeight + border}px`;
 }
 
 $("segments").addEventListener("input", (e) => {
@@ -502,7 +519,52 @@ $("segments").addEventListener("input", (e) => {
 });
 $("segment-filter").oninput = renderSegments;
 
+/** Fuse a segment into the one above: one slot, one TTS call, no seam between them. */
+function mergeUp(index) {
+  const at = state.segments.findIndex((s) => s.index === index);
+  if (at < 1) return;
+  const above = state.segments[at - 1];
+  const seg = state.segments[at];
+  above.end = Math.max(above.end, seg.end);
+  above.text = [above.text, seg.text].filter((t) => t.trim()).join(" ").trim();
+  above.skip = above.skip && seg.skip;
+  state.segments.splice(at, 1);
+  reindex();
+}
+
+function deleteSegment(index) {
+  const at = state.segments.findIndex((s) => s.index === index);
+  if (at < 0) return;
+  state.segments.splice(at, 1);
+  reindex();
+}
+
+/** Renumber after a structural edit, mark everything dirty, redraw. */
+function reindex() {
+  state.segments.forEach((s, i) => (s.index = i));
+  state.dirty = new Set(state.segments.map((_, i) => i));
+  updateStats();
+  renderSegments();
+}
+
+$("btn-automerge").onclick = () => {
+  const gap = Number(state.defaults.merge_gap ?? 0.18);
+  let fused = 0;
+  for (let i = state.segments.length - 1; i > 0; i--) {
+    if (state.segments[i].start - state.segments[i - 1].end <= gap) {
+      mergeUp(state.segments[i].index);
+      fused++;
+    }
+  }
+  toast(fused ? `fused ${fused} segments — remember to Save edits` : "nothing close enough to merge");
+};
+
 $("segments").addEventListener("click", async (e) => {
+  const merge = e.target.closest("button[data-merge]");
+  if (merge) return mergeUp(+merge.dataset.merge);
+  const del = e.target.closest("button[data-del]");
+  if (del) return deleteSegment(+del.dataset.del);
+
   const button = e.target.closest("button[data-play]");
   if (!button) return;
   // Preview the text as currently edited, not what's on disk.

@@ -60,19 +60,89 @@ def _to_bytes(samples: array.array) -> bytes:
     return samples.tobytes()
 
 
-def apply_fades(pcm: bytes, sample_rate: int, fade_ms: int = 8) -> bytes:
-    """Linear fade in/out so segments dropped onto silence don't click at the seams."""
-    if fade_ms <= 0 or not pcm:
+def apply_fades(pcm: bytes, sample_rate: int, fade_in_ms: float = 8, fade_out_ms: float = 8) -> bytes:
+    """Linear fade in/out so segments dropped onto silence don't click at the seams.
+
+    In and out are separate on purpose: a clip that butts straight against its neighbour
+    wants only a click-guard (~2 ms), because a full fade there is audible as a dip in the
+    middle of what the listener hears as one continuous sentence.
+    """
+    if not pcm or (fade_in_ms <= 0 and fade_out_ms <= 0):
         return pcm
     samples = _as_array(pcm)
-    fade = min(int(sample_rate * fade_ms / 1000), len(samples) // 2)
-    if fade <= 0:
-        return pcm
-    for i in range(fade):
-        gain = i / fade
-        samples[i] = int(samples[i] * gain)
-        samples[-1 - i] = int(samples[-1 - i] * gain)
+    half = len(samples) // 2
+    fade_in = min(int(sample_rate * fade_in_ms / 1000), half)
+    fade_out = min(int(sample_rate * fade_out_ms / 1000), half)
+    for i in range(fade_in):
+        samples[i] = int(samples[i] * (i / fade_in))
+    for i in range(fade_out):
+        samples[-1 - i] = int(samples[-1 - i] * (i / fade_out))
     return _to_bytes(samples)
+
+
+def mix(base: bytes, overlay: bytes, gain: float = 1.0) -> bytes:
+    """Sum two buffers with clipping. `overlay` is looped/truncated to len(base)."""
+    if not overlay or gain <= 0:
+        return base
+    a, b = _as_array(base), _as_array(overlay)
+    for i in range(len(a)):
+        value = a[i] + int(b[i] * gain)
+        a[i] = 32767 if value > 32767 else (-32768 if value < -32768 else value)
+    return _to_bytes(a)
+
+
+def reversed_pcm(pcm: bytes) -> bytes:
+    samples = _as_array(pcm)
+    samples.reverse()
+    return _to_bytes(samples)
+
+
+def quietest_window(pcm: bytes, sample_rate: int, seconds: float = 0.4) -> tuple[bytes, float]:
+    """Find the quietest stretch of `pcm` — the recording's own room tone.
+
+    Returns (window, its RMS). Scans block energies rather than per-sample windows so this
+    stays linear over a long file.
+    """
+    block = max(1, sample_rate // 100)                 # 10 ms blocks
+    want = max(1, int(seconds * sample_rate) // block)  # window length, in blocks
+    samples = _as_array(pcm)
+    if len(samples) < want * block:
+        return b"", 0.0
+
+    energies = []
+    for start in range(0, len(samples) - block + 1, block):
+        total = 0
+        for i in range(start, start + block):
+            total += samples[i] * samples[i]
+        energies.append(total / block)
+
+    if len(energies) < want:
+        return b"", 0.0
+    running = sum(energies[:want])
+    best, best_at = running, 0
+    for i in range(want, len(energies)):
+        running += energies[i] - energies[i - want]
+        if running < best:
+            best, best_at = running, i - want + 1
+
+    start = best_at * block
+    return slice_frames(pcm, start, start + want * block), (best / want) ** 0.5
+
+
+def tile(pcm: bytes, total_frames: int) -> bytes:
+    """Repeat `pcm` to `total_frames`, alternating forward/reversed copies so the loop points
+    stay continuous instead of clicking every time the tile restarts."""
+    if not pcm:
+        return b""
+    want = total_frames * SAMPLE_WIDTH
+    chunks, size, flip = [], 0, False
+    back = reversed_pcm(pcm)
+    while size < want:
+        piece = back if flip else pcm
+        chunks.append(piece)
+        size += len(piece)
+        flip = not flip
+    return b"".join(chunks)[:want]
 
 
 def peak(pcm: bytes) -> int:

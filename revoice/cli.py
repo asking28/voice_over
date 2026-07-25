@@ -225,6 +225,12 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--max-tempo", dest="max_tempo", type=float, default=None)
         p.add_argument("--min-tempo", dest="min_tempo", type=float, default=None)
         p.add_argument(
+            "--room-tone", dest="room_tone", type=float, default=None,
+            help="blend the source's own noise floor under the track so pauses aren't digital "
+                 "silence (0 = off, default 0.9)",
+        )
+        p.add_argument("--fade-ms", dest="fade_ms", type=int, default=None)
+        p.add_argument(
             "--no-adaptive", dest="adaptive_retry", action="store_false", default=None,
             help="never re-request a faster take; time-stretch only",
         )
@@ -243,6 +249,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("-o", "--output", help="output file (default: <name>.revoiced.mp4)")
     p_run.add_argument("--transcript", help="skip STT and use this (edited) transcript.json")
     p_run.add_argument("--clone", action="store_true", help="clone the source speaker's voice first")
+    p_run.add_argument(
+        "--merge-gap", dest="merge_gap", type=float, default=None,
+        help="fuse neighbouring segments closer than this many seconds, so one spoken "
+             "sentence stays one TTS call (0 = off, default 0.18)",
+    )
     add_common(p_run)
     p_run.set_defaults(func=cmd_run)
 
@@ -252,6 +263,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_tr.add_argument("--stt-model", dest="stt_model", default=None)
     p_tr.add_argument("--utt-split", dest="utt_split", type=float, default=None,
                       help="gap (s) that starts a new segment, default 0.6")
+    p_tr.add_argument("--merge-gap", dest="merge_gap", type=float, default=None,
+                      help="then fuse neighbours closer than this, default 0.18 (0 = off)")
     p_tr.add_argument("--max-segment-chars", dest="max_segment_chars", type=int, default=None)
     p_tr.add_argument("--diarize", action="store_true", default=None, help="tag speakers")
     p_tr.add_argument("--no-filler-words", dest="filler_words", action="store_false", default=None)
