@@ -245,6 +245,10 @@ td input.tiny { width: 74px; font-family: var(--mono); font-size: 12px; padding:
 .banner .muted { color: var(--muted); }
 .banner a { color: var(--accent); }
 
+.voice-id {
+  display: block; margin-top: 6px; font-family: var(--mono); font-size: 11.5px;
+  color: var(--accent); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 #preview-audio { width: 100%; height: 32px; margin-top: 8px; }
 td .play { font-size: 13px; padding: 2px 6px; }
 td .play:disabled { opacity: .4; }

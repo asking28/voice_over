@@ -105,16 +105,21 @@ async function loadVoices() {
     if (error) throw new Error(error);
     const mine = voices.filter((v) => v.is_owner);
     const rest = voices.filter((v) => !v.is_owner);
-    const group = (label, list) =>
+    // Aura's model name *is* the voice, so show it — otherwise the id you'd put in
+    // --voice-id or read back in a report appears nowhere in the UI.
+    const label = (v) =>
+      provider() === "deepgram" ? `${v.name} · ${v.id}` : `${v.name} — ${v.language}`;
+    const group = (heading, list) =>
       list.length
-        ? `<optgroup label="${label}">${list
-            .map((v) => `<option value="${v.id}">${v.name} — ${v.language}</option>`)
+        ? `<optgroup label="${heading}">${list
+            .map((v) => `<option value="${v.id}" title="${v.id}&#10;${v.description}">${label(v)}</option>`)
             .join("")}</optgroup>`
         : "";
     select.innerHTML = group("your voices", mine) + group("library", rest);
     const preferred = provider() === state.defaults.tts_provider ? state.defaults.voice_id : "";
     if (preferred) select.value = preferred;
     if (!select.value && select.options.length) select.selectedIndex = 0;
+    showVoiceId();
   } catch (e) {
     select.innerHTML = `<option value="">(couldn't load — using default)</option>`;
     toast(`voices: ${e.message}`, true);
@@ -221,6 +226,14 @@ function syncCloneToggle() {
     : "(Cartesia only — Aura has a fixed voice catalogue)";
 }
 $("btn-reload-voices").onclick = loadVoices;
+
+/** Always show the literal id being sent to the API — it's what --voice-id takes and what
+ *  report.json records, and a friendly display name alone leaves you guessing. */
+function showVoiceId() {
+  const select = $("opt-voice");
+  $("voice-id").textContent = select.value || "—";
+}
+$("opt-voice").addEventListener("change", showVoiceId);
 
 /* ─────────────────────────────────────────────────────────────── voice preview */
 
@@ -643,6 +656,13 @@ async function renderResult(job) {
 
   try {
     const report = await api(`/api/jobs/${job.id}/file/report`);
+    // Say which voice actually produced this file — you can't tell from the video.
+    if (report.voice?.voice_id) {
+      const { provider, voice_id } = report.voice;
+      $("result-path").innerHTML =
+        `${escapeHtml(job.output_path)} · <b>${escapeHtml(provider)}</b> ${escapeHtml(voice_id)}` +
+        (report.room_tone ? ` · room tone: ${escapeHtml(report.room_tone)}` : "");
+    }
     const worst = Math.max(0.001, ...report.segments.map((r) => Math.abs(r.drift)));
     $("timing").querySelector("tbody").innerHTML = report.segments
       .map((r) => {
