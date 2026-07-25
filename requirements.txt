@@ -1,0 +1,13 @@
+# The pipeline itself (revoice/{media,audio,stt,tts,timeline,pipeline,cli}.py) is stdlib-only
+# — urllib + wave + subprocess — so `python3 -m revoice.cli` runs with none of this installed.
+#
+# These are only needed for the web app (revoice/server.py + web/):
+fastapi>=0.115
+uvicorn[standard]>=0.32
+
+# Optional everywhere: without it, config.py falls back to its own .env parser.
+python-dotenv>=1.0
+
+# NOT installable with pip — ffmpeg and ffprobe must be on PATH:
+#   macOS   brew install ffmpeg
+#   Debian  sudo apt install ffmpeg

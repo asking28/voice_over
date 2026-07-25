@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>revoice — re-voice a local video, keep the timing</title>
+<link rel="stylesheet" href="/styles.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎙️</text></svg>">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">🎙️</span>
+    <div>
+      <h1>revoice</h1>
+      <p>extract → transcribe with exact pauses → re-speak → fit to the same length → mux back</p>
+    </div>
+  </div>
+  <div class="health" id="health"></div>
+</header>
+
+<main>
+
+  <!-- ─────────────────────────────────────────────────────────── 1. source -->
+  <section class="card" id="card-source">
+    <div class="card-head">
+      <h2><span class="step">1</span> Local file</h2>
+      <span class="hint">nothing is uploaded — the server reads the path in place</span>
+    </div>
+    <div class="row">
+      <input type="text" id="input-path" class="grow mono" placeholder="/Users/you/Movies/talk.mp4"
+             spellcheck="false" autocomplete="off">
+      <button class="btn ghost" id="btn-browse">Browse…</button>
+      <button class="btn ghost" id="btn-probe">Inspect</button>
+    </div>
+    <div id="media-info" class="info-strip hidden"></div>
+  </section>
+
+  <!-- ─────────────────────────────────────────────────────────── 2. options -->
+  <section class="card" id="card-options">
+    <div class="card-head">
+      <h2><span class="step">2</span> Voice &amp; timing</h2>
+      <button class="btn link" id="btn-toggle-adv">advanced ▾</button>
+    </div>
+
+    <div class="grid">
+      <label>TTS provider
+        <div class="segmented" id="opt-provider">
+          <button data-value="deepgram" class="on">Deepgram Aura</button>
+          <button data-value="cartesia">Cartesia Sonic</button>
+        </div>
+      </label>
+      <label>Voice
+        <div class="row tight">
+          <select id="opt-voice" class="grow"></select>
+          <button class="btn ghost sm" id="btn-preview" title="hear one sentence in this voice">▶</button>
+          <button class="btn ghost sm" id="btn-reload-voices" title="reload voices">↻</button>
+        </div>
+        <audio id="preview-audio" class="hidden" controls></audio>
+      </label>
+      <label>Language
+        <input type="text" id="opt-language" value="en" class="mono" size="6">
+      </label>
+      <label>Fit mode
+        <div class="segmented" id="opt-fit-mode">
+          <button data-value="natural" class="on">natural</button>
+          <button data-value="exact">exact</button>
+        </div>
+      </label>
+      <label class="check">
+        <input type="checkbox" id="opt-clone">
+        <span>Clone the source speaker's voice <em id="clone-note">(Cartesia only — uses ~15 s of the recording)</em></span>
+      </label>
+    </div>
+
+    <div class="grid advanced hidden" id="advanced">
+      <label>TTS model <input type="text" id="opt-tts-model" class="mono"></label>
+      <label>STT model <input type="text" id="opt-stt-model" class="mono"></label>
+      <label>Max speed-up <input type="number" id="opt-max-tempo" step="0.05" min="1" max="3"></label>
+      <label>Min slow-down <input type="number" id="opt-min-tempo" step="0.05" min="0.3" max="1"></label>
+      <label>New-segment gap (s) <input type="number" id="opt-utt-split" step="0.1" min="0.1" max="3"></label>
+      <label>Max chars / segment <input type="number" id="opt-max-chars" step="20" min="60"></label>
+      <label>Parallel requests <input type="number" id="opt-workers" step="1" min="1" max="16"></label>
+      <label>Sample rate <input type="number" id="opt-sample-rate" step="100"></label>
+      <label>Output audio codec
+        <select id="opt-audio-codec">
+          <option value="aac">aac — small, +≤23 ms tail padding</option>
+          <option value="alac">alac — lossless, sample-exact (.mp4/.mov)</option>
+          <option value="flac">flac — lossless (.mkv)</option>
+          <option value="pcm_s16le">pcm_s16le — uncompressed (.mov/.mkv)</option>
+        </select>
+      </label>
+      <label class="check"><input type="checkbox" id="opt-adaptive"><span>Re-request a faster take before time-stretching</span></label>
+      <label class="check"><input type="checkbox" id="opt-filler"><span>Keep filler words (um, uh)</span></label>
+      <label class="check"><input type="checkbox" id="opt-diarize"><span>Detect speakers</span></label>
+      <label class="check"><input type="checkbox" id="opt-keep-original"><span>Keep original audio as a 2nd track</span></label>
+      <label class="wide">Output file
+        <input type="text" id="opt-output" class="mono" placeholder="(defaults to <name>.revoiced.mp4)">
+      </label>
+    </div>
+  </section>
+
+  <!-- ─────────────────────────────────────────────────────────── 3. run -->
+  <section class="card" id="card-run">
+    <div class="card-head">
+      <h2><span class="step">3</span> Run</h2>
+      <span class="hint" id="job-id"></span>
+    </div>
+    <div class="row">
+      <button class="btn primary" id="btn-transcribe">Transcribe &amp; review →</button>
+      <button class="btn" id="btn-runall">Run everything →</button>
+      <button class="btn ghost danger hidden" id="btn-reset">Start over</button>
+    </div>
+
+    <div id="run-error" class="banner hidden"></div>
+
+    <div id="pipeline" class="pipeline hidden">
+      <div class="rail">
+        <div class="stage" data-stage="extract"><b>1</b> extract audio</div>
+        <div class="stage" data-stage="transcribe"><b>2</b> transcribe</div>
+        <div class="stage" data-stage="synthesize"><b>3·4</b> speak &amp; fit</div>
+        <div class="stage" data-stage="mux"><b>5</b> mux</div>
+      </div>
+      <div class="bar"><div id="bar-fill"></div></div>
+      <div class="row between">
+        <span id="stage-msg" class="mono small"></span>
+        <button class="btn link" id="btn-toggle-log">log ▾</button>
+      </div>
+      <pre id="log" class="log hidden"></pre>
+    </div>
+  </section>
+
+  <!-- ─────────────────────────────────────────────── 4. editable transcript -->
+  <section class="card hidden" id="card-transcript">
+    <div class="card-head">
+      <h2><span class="step">4</span> Transcript <span class="tag">editable</span></h2>
+      <span class="hint" id="transcript-stats"></span>
+    </div>
+    <div class="row toolbar">
+      <input type="search" id="segment-filter" placeholder="filter segments…" class="grow">
+      <button class="btn ghost sm" id="btn-save-transcript">Save edits</button>
+      <a class="btn ghost sm" id="dl-json" download>.json</a>
+      <a class="btn ghost sm" id="dl-srt" download>.srt</a>
+      <button class="btn primary" id="btn-synthesize">Synthesize &amp; mux →</button>
+    </div>
+    <p class="hint pad">
+      Edit any line — fix a misheard word, rewrite a sentence, or tick <b>skip</b> to leave that slot
+      silent. Each segment is re-spoken into its own <b>slot</b>, so the pauses between them and the
+      total length never change. Only segments whose text you changed are re-synthesized.
+    </p>
+    <div class="table-wrap">
+      <table id="segments">
+        <thead>
+          <tr>
+            <th>#</th><th>start</th><th>slot</th><th>pause</th>
+            <th class="text-col">text</th><th>skip</th><th title="hear this line">▶</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ─────────────────────────────────────────────────────────── 5. result -->
+  <section class="card hidden" id="card-result">
+    <div class="card-head">
+      <h2><span class="step">5</span> Result</h2>
+      <span class="hint mono" id="result-path"></span>
+    </div>
+    <div class="tiles" id="tiles"></div>
+    <div class="players">
+      <figure><figcaption>original</figcaption><video id="v-original" controls preload="metadata"></video></figure>
+      <figure><figcaption>re-voiced</figcaption><video id="v-revoiced" controls preload="metadata"></video></figure>
+    </div>
+    <div class="row">
+      <a class="btn ghost sm" id="dl-output" download>download video</a>
+      <a class="btn ghost sm" id="dl-track" download>download audio track</a>
+      <a class="btn ghost sm" id="dl-report" download>timing report</a>
+      <button class="btn link" id="btn-toggle-timing">per-segment timing ▾</button>
+    </div>
+    <div class="table-wrap hidden" id="timing-wrap">
+      <table id="timing">
+        <thead><tr>
+          <th>#</th><th>start</th><th>slot</th><th>spoken</th><th>tempo</th>
+          <th>final</th><th>drift</th><th class="text-col">text</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+</main>
+
+<dialog id="browser">
+  <div class="browser-head">
+    <strong id="browser-dir" class="mono"></strong>
+    <button class="btn ghost sm" id="browser-close">✕</button>
+  </div>
+  <div class="row shortcuts" id="browser-shortcuts"></div>
+  <ul id="browser-list"></ul>
+</dialog>
+
+<div id="toast" class="toast"></div>
+
+<script src="/app.js"></script>
+</body>
+</html>

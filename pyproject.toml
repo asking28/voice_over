@@ -1,0 +1,17 @@
+[project]
+name = "revoice"
+version = "0.1.0"
+description = "Local video re-voicing pipeline: extract audio → Deepgram STT with exact timings → Cartesia TTS fitted to the original durations → muxed back into the video"
+readme = "README.md"
+requires-python = ">=3.11"
+
+# The pipeline itself is stdlib-only (urllib + wave + subprocess) so it can run with a bare
+# `python3 -m revoice.cli`. Only the web layer pulls in dependencies.
+dependencies = [
+    "python-dotenv>=1.0",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+]
+
+[tool.uv]
+package = false

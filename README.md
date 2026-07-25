@@ -1,0 +1,221 @@
+# revoice
+
+Re-voice a **local** video: pull the audio out, transcribe it with exact word timings, speak
+it again with a synthetic voice, fit every line back into the exact slot it came from, and
+mux it back into the original video.
+
+The point is **timing fidelity**. The output is the same length as the input, every pause sits
+where it always sat, and the video stream is copied untouched — so lip-adjacent cues, slide
+changes and screen-recording actions still line up.
+
+- **STT** — Deepgram `nova-3` (word-level timings, utterances, filler words)
+- **TTS** — Deepgram `aura-2` *(default)* or Cartesia `sonic-3.5` (which can also clone the
+  source speaker). Aura uses the same key as the STT stage, so one key covers the pipeline.
+- **Media** — ffmpeg (demux, pitch-preserving time-stretch, mux)
+- **Input** — a local file path. Nothing is uploaded to the web app; the server reads the path.
+
+---
+
+## Setup
+
+```bash
+git clone https://github.com/asking28/voice_over.git
+cd voice_over
+
+brew install ffmpeg          # macOS — or: sudo apt install ffmpeg
+cp .env.example .env         # then put your keys in it
+```
+
+`.env` needs `DEEPGRAM_API_KEY` ([console.deepgram.com](https://console.deepgram.com)) — it
+covers both transcription and the default Aura voices. `CARTESIA_API_KEY`
+([play.cartesia.ai](https://play.cartesia.ai)) is only needed if you switch the TTS provider
+to Cartesia or use `--clone`.
+
+**Requirements:** Python 3.11+, `ffmpeg` and `ffprobe` on `PATH`. `requirements.txt` covers
+the web app only (`fastapi`, `uvicorn`); the pipeline and CLI are stdlib-only, so
+`python3 -m revoice.cli` works with nothing installed. `./run.sh` builds the venv for you, or:
+
+```bash
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+```
+
+The pipeline itself is **stdlib-only** (urllib + wave + subprocess), so the CLI runs on a bare
+`python3`. Only the web layer needs dependencies, installed automatically by `run.sh`.
+
+---
+
+## Web app
+
+```bash
+./run.sh
+```
+
+→ http://127.0.0.1:8010
+
+1. **Local file** — type or browse to a path. *Inspect* shows duration, resolution and codecs.
+2. **Voice & timing** — pick a provider and voice, hit **▶** to hear a sentence in it before
+   committing, choose a fit mode, and open *advanced* for the rest. (*Clone* is Cartesia-only
+   and greys out under Aura.)
+3. **Run** — *Transcribe & review* stops after stage 2 so you can edit; *Run everything* goes
+   straight through. A live rail shows which stage is running.
+4. **Transcript** — the editable intermediate (see below). Edit, then *Synthesize & mux*.
+5. **Result** — timing tiles, the original and re-voiced videos side by side, a per-segment
+   drift table, and download links.
+
+Jobs live in `jobs/<id>/` and survive a restart. The file browser is confined to `$HOME`
+(override with `REVOICE_BROWSE_ROOT`).
+
+---
+
+## CLI
+
+```bash
+python3 -m revoice.cli run talk.mp4                      # everything → talk.revoiced.mp4
+python3 -m revoice.cli run talk.mp4 -o dubbed.mp4 -v     # + per-segment timing table
+python3 -m revoice.cli run talk.mp4 --clone              # clone the source speaker first
+
+# or stage by stage, editing in between
+python3 -m revoice.cli transcribe talk.mp4               # → work/talk/transcript.json
+$EDITOR work/talk/transcript.json
+python3 -m revoice.cli synthesize work/talk/transcript.json
+python3 -m revoice.cli mux talk.mp4 work/talk/revoiced.wav -o dubbed.mp4
+
+# and, once you have an edited transcript, the whole thing minus the STT call
+python3 -m revoice.cli run talk.mp4 --transcript work/talk/transcript.json
+
+python3 -m revoice.cli preview                           # hear the default voice
+python3 -m revoice.cli preview --text "how does this sound?" --voice-id aura-2-zeus-en
+python3 -m revoice.cli voices                            # Aura catalogue
+python3 -m revoice.cli voices --provider cartesia        # your Cartesia library
+python3 -m revoice.cli probe talk.mp4
+```
+
+`preview` doubles as a preflight check: a bad key or an exhausted plan surfaces there for the
+cost of one sentence, instead of one failed call per segment.
+
+Audio-only inputs work too — stage 5 just writes an audio file instead of a video.
+
+---
+
+## The editable transcript
+
+Stage 2 writes `transcript.json`. It is the contract between transcription and synthesis, and
+it is meant to be edited — in the web table, or in any text editor:
+
+```json
+{
+  "duration": 35.0,
+  "segments": [
+    {
+      "index": 0,
+      "start": 0.0,
+      "end": 1.36,
+      "duration": 1.36,
+      "pause_after": 0.24,
+      "text": "In the Epic EMR system,",
+      "skip": false,
+      "voice_id": "",
+      "words": [ { "text": "In", "start": 0.08, "end": 0.24 } ]
+    }
+  ]
+}
+```
+
+| field | what it does |
+|---|---|
+| `text` | what gets spoken. Fix a misheard word, rewrite the line, or translate it. |
+| `start` / `end` | the slot. `end - start` is the duration the synthesized line is fitted into, and the gaps between slots are the pauses. |
+| `skip` | leave this slot silent. |
+| `voice_id` | per-segment voice override — e.g. give each speaker their own voice after `--diarize`. |
+| `words` | Deepgram's word timings, kept for reference; the editor preserves them. |
+
+Only segments whose **text actually changed** are re-synthesized — everything else comes from
+the on-disk TTS cache, so a re-run after a two-word fix takes well under a second and costs
+nothing. `transcript.srt` is written alongside it.
+
+---
+
+## How the timing is preserved
+
+1. The canvas length comes from the **frame count of the extracted PCM**, not from container
+   metadata, and never changes. Every clip is stamped onto it at a byte offset (`frame N` →
+   `byte 2N`), so there is no filter-graph rounding and no drift accumulating across segments.
+2. Each segment is synthesized independently and compared against its slot:
+   - too long → ask for a genuinely faster take where the provider supports it (Cartesia
+     `speed: fast`; Aura has no speed control and goes straight to stretching), then
+     pitch-preserving `atempo` up to `--max-tempo` (default 1.6×);
+   - too short → in `natural` mode it just finishes early and the slot's remaining time stays
+     silent, which is what a person sounds like. `exact` mode stretches it to fill the slot.
+3. Clips are placed at their original start time. A clip only pushes the next one later if it
+   would physically overlap, and the report tells you when that happened.
+4. The video stream is **copied**, never re-encoded.
+
+Measured on a 6-minute 1080p screen recording — 86 segments, Deepgram Aura, 31 s wall clock:
+
+```
+source 357.564s → output 357.564s (delta -0.0000s)
+drift: max 40 ms, mean 2.7 ms
+86 spoken / 0 skipped / 0 failed · 37 time-stretched (max 1.60x)
+```
+
+(A 35 s clip through Cartesia: 0 ms length delta, 9 ms max drift.)
+
+**One caveat, stated honestly:** AAC codes 1024 samples per frame, so an AAC track rounds up
+to the next frame boundary — up to ~23 ms of trailing silence past the assembled length (the
+video stream and every segment position are unaffected). Choose `--audio-codec alac` (or
+`flac` / `pcm_s16le`) when the audio track has to match the source sample count exactly;
+that path is verified sample-for-sample.
+
+---
+
+## Options
+
+| flag / field | default | meaning |
+|---|---|---|
+| `--provider` | `deepgram` | `deepgram` (Aura, 41 voices, same key as STT) or `cartesia` (Sonic, your library + cloning + a speed hint) |
+| `--voice-id` | `aura-2-thalia-en` | which voice speaks — an Aura model name, or a Cartesia voice UUID |
+| `--clone` | off | clone the source speaker from the densest ~15 s of their speech |
+| `--fit-mode` | `natural` | `natural` speeds up only when needed; `exact` fills every slot |
+| `--max-tempo` | `1.6` | hard cap on speed-up before a segment is allowed to run long |
+| `--min-tempo` | `0.75` | hard cap on slow-down (`exact` mode only) |
+| `--utt-split` | `0.6` | a gap this long (s) starts a new segment |
+| `--max-segment-chars` | `320` | longer utterances are split at sentence boundaries |
+| `--workers` | `6` | parallel Cartesia requests |
+| `--no-adaptive` | off | never re-request a faster take; time-stretch only |
+| `--audio-codec` | `aac` | `alac`/`flac`/`pcm_s16le` for a sample-exact track |
+| `--keep-original-track` | off | keep the source audio as a second track |
+| `--diarize` | off | tag segments with a speaker id |
+| `--no-filler-words` | off | drop "um"/"uh" (their time then becomes silence) |
+
+---
+
+## Layout
+
+```
+revoice/
+├── run.sh                  # start the web app on :8010
+├── revoice/
+│   ├── config.py           # env + every tunable knob
+│   ├── media.py            # ffmpeg/ffprobe: demux, probe, atempo, mux
+│   ├── audio.py            # sample-exact PCM canvas, fades, loudness
+│   ├── stt.py              # Deepgram transcription
+│   ├── tts.py              # Deepgram Aura + Cartesia Sonic behind one interface
+│   ├── timeline.py         # the editable transcript model + Deepgram → segments
+│   ├── pipeline.py         # the five stages
+│   ├── jobs.py             # background job runner for the web app
+│   ├── server.py           # FastAPI backend
+│   └── cli.py              # command line
+└── web/                    # single-page frontend (vanilla JS)
+```
+
+## Notes
+
+- Voice cloning is opt-in on purpose. Only clone a voice you have the right to clone.
+- Each run costs one Deepgram transcription plus **one TTS call per segment** (a couple more
+  when the Cartesia adaptive retry fires). The transcript panel shows the segment count and
+  character total before you commit, and the cache makes edit-and-rerun effectively free.
+- A run that hits a bad key or an exhausted plan **fails loudly and stops**, rather than
+  muxing a mostly-silent video that looks like a success. The first such error aborts the
+  remaining segments instead of burning a doomed call on each one.
+- `atempo` is transparent to roughly ±30%; past that speech starts to sound processed, which
+  is why `--max-tempo` exists and why the report flags every stretched segment.
