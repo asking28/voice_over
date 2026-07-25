@@ -12,7 +12,13 @@ const cut = {
   selection: null,   // pending [start, end] from a drag
   jobId: null,
   poller: null,
+  view: { start: 0, end: 0 },   // visible time window — the zoom state
+  viewPeaks: [],                // high-resolution envelope for that window
+  viewRange: null,              // the window viewPeaks was computed for
+  previewing: false,            // skip-the-cuts playback
 };
+
+const MIN_SPAN = 0.4;           // don't zoom past ~half a second across the canvas
 
 /* ───────────────────────────────────────────────────────────────── tabs */
 
@@ -63,7 +69,11 @@ async function analyzeFile() {
       cuts: [],
       history: [],
       selection: null,
+      view: { start: 0, end: data.duration },
+      viewPeaks: [],
+      viewRange: null,
     });
+    updateSilenceCount();
 
     const m = data.media;
     $("cut-info").innerHTML = [
@@ -84,8 +94,9 @@ async function analyzeFile() {
     $("cut-export").classList.remove("hidden");
     $("cut-result").classList.add("hidden");
     $("cut-error").classList.add("hidden");
+    setPreview(false);
     renderCuts();
-    drawWave();
+    setView(0, cut.duration);   // also initializes the zoom label + envelope fetch
   } catch (e) {
     toast(e.message, true);
   } finally {
@@ -100,12 +111,36 @@ function cssVar(name) {
   return getComputedStyle(document.body).getPropertyValue(name).trim();
 }
 
+/** Envelope value at time t — from the zoomed fetch when it covers t, else the full-file one. */
+function sampleEnvelope(t) {
+  if (cut.viewRange && cut.viewPeaks.length) {
+    const [a, b] = cut.viewRange;
+    if (t >= a && t <= b && b > a) {
+      const i = Math.floor(((t - a) / (b - a)) * cut.viewPeaks.length);
+      return cut.viewPeaks[Math.min(i, cut.viewPeaks.length - 1)] || 0;
+    }
+  }
+  if (!cut.duration || !cut.peaks.length) return 0;
+  const i = Math.floor((t / cut.duration) * cut.peaks.length);
+  return cut.peaks[Math.min(i, cut.peaks.length - 1)] || 0;
+}
+
+/** A tick spacing that gives roughly a dozen labels across the visible span. */
+function tickInterval(span) {
+  for (const step of [0.1, 0.25, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600]) {
+    if (span / step <= 12) return step;
+  }
+  return 900;
+}
+
 function drawWave() {
   const canvas = $("wave");
   const width = canvas.clientWidth;
   const height = canvas.clientHeight;
   if (!width || !cut.duration) return;
 
+  const view = cut.view;
+  const span = Math.max(0.001, view.end - view.start);
   const dpr = window.devicePixelRatio || 1;
   canvas.width = width * dpr;
   canvas.height = height * dpr;
@@ -113,13 +148,33 @@ function drawWave() {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, width, height);
 
-  const x = (t) => (t / cut.duration) * width;
-  const mid = height / 2;
+  const RULER = 18;
+  const x = (t) => ((t - view.start) / span) * width;
+  const body = height - RULER;
+  const mid = RULER + body / 2;
 
   // silence bands, so "where is there actually audio" reads at a glance
   ctx.fillStyle = cssVar("--panel");
   for (const [start, end] of cut.silence) {
-    ctx.fillRect(x(start), 0, Math.max(1, x(end) - x(start)), height);
+    if (end < view.start || start > view.end) continue;
+    ctx.fillRect(x(start), RULER, Math.max(1, x(end) - x(start)), body);
+  }
+
+  // time ruler
+  const step = tickInterval(span);
+  ctx.fillStyle = cssVar("--muted");
+  ctx.strokeStyle = cssVar("--line");
+  ctx.font = "10px ui-monospace, Menlo, monospace";
+  ctx.textBaseline = "top";
+  for (let t = Math.ceil(view.start / step) * step; t <= view.end; t += step) {
+    const px = x(t);
+    ctx.globalAlpha = 0.5;
+    ctx.beginPath();
+    ctx.moveTo(px + 0.5, RULER);
+    ctx.lineTo(px + 0.5, height);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+    ctx.fillText(clock(t), px + 3, 3);
   }
 
   // the envelope itself, mirrored around the centre line
@@ -128,8 +183,8 @@ function drawWave() {
   ctx.globalAlpha = 0.85;
   ctx.beginPath();
   for (let px = 0; px < width; px++) {
-    const peak = cut.peaks[Math.floor((px / width) * cut.peaks.length)] || 0;
-    const half = Math.max(0.5, peak * mid * 0.92);
+    const peak = sampleEnvelope(view.start + (px / width) * span);
+    const half = Math.max(0.5, peak * (body / 2) * 0.92);
     ctx.moveTo(px + 0.5, mid - half);
     ctx.lineTo(px + 0.5, mid + half);
   }
@@ -146,14 +201,15 @@ function drawWave() {
   // ranges marked for removal
   const err = cssVar("--err");
   for (const [start, end] of cut.cuts) {
+    if (end < view.start || start > view.end) continue;
     const left = x(start);
     const w = Math.max(2, x(end) - left);
     ctx.fillStyle = err;
     ctx.globalAlpha = 0.26;
-    ctx.fillRect(left, 0, w, height);
+    ctx.fillRect(left, RULER, w, body);
     ctx.globalAlpha = 1;
-    ctx.fillRect(left, 0, 2, height);
-    ctx.fillRect(left + w - 2, 0, 2, height);
+    ctx.fillRect(left, RULER, 2, body);
+    ctx.fillRect(left + w - 2, RULER, 2, body);
   }
 
   // pending selection
@@ -161,20 +217,108 @@ function drawWave() {
     const [start, end] = cut.selection;
     ctx.fillStyle = accent;
     ctx.globalAlpha = 0.22;
-    ctx.fillRect(x(start), 0, Math.max(2, x(end) - x(start)), height);
+    ctx.fillRect(x(start), RULER, Math.max(2, x(end) - x(start)), body);
     ctx.globalAlpha = 1;
   }
 
   // playhead
   const video = $("cut-video");
-  if (video.currentTime) {
+  const t = video.currentTime;
+  if (t >= view.start && t <= view.end) {
     ctx.fillStyle = cssVar("--accent-2");
-    ctx.fillRect(x(video.currentTime), 0, 2, height);
+    ctx.fillRect(x(t), RULER, 2, body);
   }
 }
 
+/* ─────────────────────────────────────────────────────────────── zoom & pan */
+
+let envelopeTimer;
+let envelopeSeq = 0;
+
+/** Fetch a high-resolution envelope for the visible window. Debounced, and stale replies are
+ *  discarded — otherwise a slow response for an old zoom level overwrites a newer one. */
+function refreshEnvelope() {
+  clearTimeout(envelopeTimer);
+  envelopeTimer = setTimeout(async () => {
+    const seq = ++envelopeSeq;
+    const { start, end } = cut.view;
+    try {
+      const data = await api("/api/envelope", {
+        method: "POST",
+        body: JSON.stringify({
+          path: cut.path,
+          start,
+          end,
+          buckets: Math.max(400, Math.round($("wave").clientWidth * 2)),
+        }),
+      });
+      if (seq !== envelopeSeq) return;
+      cut.viewPeaks = data.peaks;
+      cut.viewRange = [data.start, data.end];
+      drawWave();
+    } catch {
+      /* keep drawing from the full-file envelope */
+    }
+  }, 130);
+}
+
+function setView(start, end) {
+  const span = Math.max(MIN_SPAN, Math.min(cut.duration, end - start));
+  let a = Math.max(0, Math.min(start, cut.duration - span));
+  cut.view = { start: a, end: a + span };
+
+  const zoomed = span < cut.duration - 0.01;
+  $("zoom-label").textContent = zoomed
+    ? `${clock(cut.view.start)} – ${clock(cut.view.end)}  (${(cut.duration / span).toFixed(1)}×)`
+    : "whole file";
+  const scroll = $("wave-scroll");
+  scroll.classList.toggle("hidden", !zoomed);
+  if (zoomed) {
+    const max = Math.max(0.001, cut.duration - span);
+    scroll.value = String(Math.round((cut.view.start / max) * 1000));
+  }
+  drawWave();
+  refreshEnvelope();
+}
+
+function zoomAt(factor, focus) {
+  const span = cut.view.end - cut.view.start;
+  const next = Math.max(MIN_SPAN, Math.min(cut.duration, span * factor));
+  const ratio = (focus - cut.view.start) / span;      // keep `focus` under the cursor
+  setView(focus - ratio * next, focus - ratio * next + next);
+}
+
+$("zoom-in").onclick = () => zoomAt(0.5, (cut.view.start + cut.view.end) / 2);
+$("zoom-out").onclick = () => zoomAt(2, (cut.view.start + cut.view.end) / 2);
+$("zoom-fit").onclick = () => setView(0, cut.duration);
+
+$("wave-scroll").oninput = (e) => {
+  const span = cut.view.end - cut.view.start;
+  const max = Math.max(0.001, cut.duration - span);
+  const start = (+e.target.value / 1000) * max;
+  setView(start, start + span);
+};
+
+$("wave").addEventListener(
+  "wheel",
+  (e) => {
+    if (!cut.duration) return;
+    e.preventDefault();
+    const span = cut.view.end - cut.view.start;
+    if (e.shiftKey) {
+      const shift = (e.deltaY || e.deltaX) / 400 * span;   // shift-scroll pans
+      setView(cut.view.start + shift, cut.view.end + shift);
+    } else {
+      zoomAt(e.deltaY > 0 ? 1.25 : 0.8, timeAt(e));
+    }
+  },
+  { passive: false }
+);
+
 window.addEventListener("resize", () => cut.duration && drawWave());
 $("cut-video").addEventListener("timeupdate", () => {
+  // Fires ~4×/s and keeps firing in a background tab, unlike rAF.
+  if (cut.previewing && !$("cut-video").paused) applySkip();
   if (!$("tab-cut").classList.contains("hidden")) drawWave();
 });
 
@@ -185,7 +329,7 @@ let dragging = null;
 function timeAt(event) {
   const rect = $("wave").getBoundingClientRect();
   const ratio = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width));
-  return ratio * cut.duration;
+  return cut.view.start + ratio * (cut.view.end - cut.view.start);
 }
 
 $("wave").addEventListener("pointerdown", (e) => {
@@ -197,7 +341,7 @@ $("wave").addEventListener("pointerdown", (e) => {
 $("wave").addEventListener("pointermove", (e) => {
   if (!dragging) return;
   const to = timeAt(e);
-  if (Math.abs(to - dragging.from) > cut.duration / 400) dragging.moved = true;
+  if (Math.abs(to - dragging.from) > (cut.view.end - cut.view.start) / 400) dragging.moved = true;
   if (dragging.moved) {
     cut.selection = [Math.min(dragging.from, to), Math.max(dragging.from, to)];
     updateSelectionLabel();
@@ -262,11 +406,50 @@ function addCut(start, end) {
 
 $("cut-add").onclick = () => cut.selection && addCut(...cut.selection);
 
+const silenceMin = () => Math.max(0.2, +$("silence-min").value || 1.0);
+const silencePad = () => Math.max(0, +$("silence-pad").value || 0);
+
+/** Live count of what "Mark silences" would take, so the thresholds are tunable by eye. */
+function updateSilenceCount() {
+  if (!cut.duration) return;
+  const found = cut.silence.filter(([a, b]) => b - a >= silenceMin());
+  const seconds = found.reduce((n, [a, b]) => n + Math.max(0, b - a - 2 * silencePad()), 0);
+  $("silence-count").textContent = found.length
+    ? `${found.length} match — ${seconds.toFixed(1)}s would be removed`
+    : "nothing matches these thresholds";
+}
+
+["silence-min", "silence-pad"].forEach((id) => {
+  $(id).addEventListener("input", updateSilenceCount);
+});
+
+// Changing the noise floor needs ffmpeg to look again — re-detect, then re-count.
+$("silence-db").addEventListener("change", async () => {
+  if (!cut.path) return;
+  try {
+    const data = await api("/api/silences", {
+      method: "POST",
+      body: JSON.stringify({
+        path: cut.path,
+        noise_db: +$("silence-db").value || -35,
+        min_silence: 0.2,          // detect finely; the UI threshold filters afterwards
+      }),
+    });
+    cut.silence = data.silence;
+    cut.speech = data.speech;
+    updateSilenceCount();
+    drawWave();
+    toast(`re-detected at ${$("silence-db").value} dB: ${data.silence.length} silences`);
+  } catch (e) {
+    toast(e.message, true);
+  }
+});
+
 $("cut-silences").onclick = () => {
-  const threshold = 1.0;   // seconds — shorter gaps are natural speech rhythm, leave them
-  const pad = 0.15;        // keep a breath either side so words aren't clipped
+  const threshold = silenceMin();
+  const pad = silencePad();      // keep a breath either side so words aren't clipped
   const found = cut.silence.filter(([a, b]) => b - a >= threshold);
-  if (!found.length) return toast(`no silences longer than ${threshold}s`);
+  if (!found.length) return toast(`no silences longer than ${threshold}s`, true);
 
   snapshot();
   let added = 0;
@@ -283,6 +466,110 @@ $("cut-silences").onclick = () => {
   drawWave();
   toast(`marked ${added} silence${added === 1 ? "" : "s"} longer than ${threshold}s`);
 };
+
+/* ────────────────────────────────────────────── preview with the cuts skipped */
+
+let previewFrame = null;
+
+/** The kept-time equivalent of a source time — what the exported file would show. */
+function keptTime(t) {
+  let removed = 0;
+  for (const [a, b] of cut.cuts) {
+    if (b <= t) removed += b - a;
+    else if (a < t) removed += t - a;
+  }
+  return Math.max(0, t - removed);
+}
+
+function nextKeptMoment(t) {
+  const hit = cut.cuts.find(([a, b]) => t >= a - 0.02 && t < b);
+  return hit ? hit[1] : t;
+}
+
+/** The actual skip. Returns false once playback has run past the last kept moment.
+ *
+ *  Driven by rAF while the tab is visible (~16 ms, so the jump is imperceptible) and by the
+ *  video's own timeupdate as a fallback — rAF is suspended entirely in a background tab, and
+ *  without the fallback switching tabs mid-preview would play straight through the cuts.
+ */
+function applySkip() {
+  const video = $("cut-video");
+  const t = video.currentTime;
+  const jump = nextKeptMoment(t);
+  if (jump !== t) {
+    if (jump >= cut.duration - 0.05) {
+      video.pause();                   // the tail is cut — stop rather than seek past the end
+      setPreview(false);
+      toast("preview finished");
+      return false;
+    }
+    video.currentTime = jump;
+  }
+  // keep the playhead in view when zoomed in
+  const span = cut.view.end - cut.view.start;
+  if (span < cut.duration - 0.01 && (t < cut.view.start || t > cut.view.end - span * 0.1)) {
+    setView(t - span * 0.2, t - span * 0.2 + span);
+  }
+  const total = cut.duration - cut.cuts.reduce((n, [a, b]) => n + (b - a), 0);
+  $("preview-note").textContent = `${clock(keptTime(t))} of ${clock(total)} in the cut version`;
+  return true;
+}
+
+function previewTick() {
+  const video = $("cut-video");
+  if (!cut.previewing || video.paused || video.ended) {
+    previewFrame = null;
+    return;
+  }
+  if (!applySkip()) {
+    previewFrame = null;
+    return;
+  }
+  previewFrame = requestAnimationFrame(previewTick);
+}
+
+function setPreview(on) {
+  cut.previewing = on;
+  const button = $("cut-preview-play");
+  button.classList.toggle("playing", on);
+  button.textContent = on ? "⏸ Stop preview" : "▶ Preview with cuts skipped";
+  if (!on) {
+    $("preview-note").textContent =
+      "plays the result without exporting — jumps over every marked section";
+    if (previewFrame) cancelAnimationFrame(previewFrame);
+    previewFrame = null;
+  }
+}
+
+$("cut-preview-play").onclick = async () => {
+  const video = $("cut-video");
+  if (cut.previewing) {
+    video.pause();
+    setPreview(false);
+    return;
+  }
+  if (!cut.cuts.length) return toast("mark at least one section first", true);
+
+  setPreview(true);
+  video.currentTime = nextKeptMoment(video.currentTime || 0);
+  try {
+    await video.play();
+  } catch (e) {
+    setPreview(false);
+    return toast(`couldn't start playback: ${e.message}`, true);
+  }
+  previewFrame = requestAnimationFrame(previewTick);
+};
+
+$("cut-video").addEventListener("pause", () => {
+  if (cut.previewing && previewFrame) {
+    cancelAnimationFrame(previewFrame);
+    previewFrame = null;
+  }
+});
+$("cut-video").addEventListener("play", () => {
+  if (cut.previewing && !previewFrame) previewFrame = requestAnimationFrame(previewTick);
+});
 
 $("cut-undo").onclick = () => {
   const previous = cut.history.pop();

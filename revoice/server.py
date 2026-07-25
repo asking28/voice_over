@@ -162,6 +162,44 @@ def analyze(payload: dict = Body(...)) -> dict:
     return result.to_dict()
 
 
+@app.post("/api/envelope")
+def envelope(payload: dict = Body(...)) -> dict:
+    """Peak envelope for a time window — what the Cut tab fetches as you zoom in."""
+    target = _safe(str(payload.get("path") or ""))
+    if not target.is_file():
+        raise HTTPException(404, f"no such file: {target}")
+    try:
+        wav, _ = waveform.ensure_audio(target)
+        return waveform.envelope(
+            wav,
+            buckets=int(payload.get("buckets") or 1600),
+            start=float(payload.get("start") or 0.0),
+            end=float(payload.get("end") or 0.0),
+        )
+    except media.MediaError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.post("/api/silences")
+def silences(payload: dict = Body(...)) -> dict:
+    """Re-detect silence at a different noise floor / minimum length, without re-extracting."""
+    target = _safe(str(payload.get("path") or ""))
+    if not target.is_file():
+        raise HTTPException(404, f"no such file: {target}")
+    wav, duration = waveform.ensure_audio(target)
+    quiet = waveform.silences(
+        wav,
+        noise_db=float(payload.get("noise_db") or -35.0),
+        min_duration=float(payload.get("min_silence") or 0.4),
+    )
+    quiet = [(a, min(b, duration) if b != float("inf") else duration) for a, b in quiet]
+    return {
+        "silence": [[round(a, 3), round(b, 3)] for a, b in quiet],
+        "speech": [list(s) for s in waveform.invert(quiet, duration)],
+        "duration": round(duration, 3),
+    }
+
+
 @app.post("/api/clip/plan")
 def clip_plan(payload: dict = Body(...)) -> dict:
     """What a cut list would produce — durations only, nothing written."""

@@ -41,28 +41,65 @@ def ensure_audio(src: str | Path) -> tuple[Path, float]:
     return wav, audio.duration_of(pcm, rate)
 
 
-def envelope(wav_path: str | Path, buckets: int = 1600) -> dict:
-    """Peak envelope, normalized to 0..1 — one value per horizontal pixel of the graph."""
-    pcm, rate = audio.read_wav(wav_path)
-    samples = audio._as_array(pcm)  # noqa: SLF001 — same package, avoids a copy
-    total = len(samples)
-    if not total:
-        return {"peaks": [], "duration": 0.0, "sample_rate": rate}
+# Zooming re-reads the same file repeatedly, so hold the last decoded PCM. One entry is
+# enough — you zoom around inside one file at a time.
+_PCM_CACHE: dict[str, tuple[float, bytes, int]] = {}
 
-    buckets = max(1, min(buckets, total))
-    width = total / buckets
+
+def _load(wav_path: str | Path) -> tuple[bytes, int]:
+    key = str(wav_path)
+    mtime = Path(wav_path).stat().st_mtime
+    cached = _PCM_CACHE.get(key)
+    if cached and cached[0] == mtime:
+        return cached[1], cached[2]
+    pcm, rate = audio.read_wav(wav_path)
+    _PCM_CACHE.clear()
+    _PCM_CACHE[key] = (mtime, pcm, rate)
+    return pcm, rate
+
+
+def envelope(
+    wav_path: str | Path,
+    buckets: int = 1600,
+    *,
+    start: float = 0.0,
+    end: float = 0.0,
+    normalize: bool = True,
+) -> dict:
+    """Peak envelope over [start, end), normalized to 0..1 — one value per pixel of the graph.
+
+    Zooming asks for a narrower window at the same bucket count, which is what makes the
+    detail real rather than a stretched version of the full-file envelope.
+    """
+    pcm, rate = _load(wav_path)
+    samples = audio._as_array(pcm)  # noqa: SLF001 — same package, avoids a copy
+    duration = len(samples) / rate if rate else 0.0
+
+    first = max(0, int(max(0.0, start) * rate))
+    last = min(len(samples), int(end * rate)) if end > start else len(samples)
+    span = samples[first:last]
+    if not len(span):
+        return {"peaks": [], "duration": duration, "sample_rate": rate, "start": start, "end": end}
+
+    buckets = max(1, min(buckets, len(span)))
+    width = len(span) / buckets
     peaks = []
     for i in range(buckets):
-        start, end = int(i * width), max(int(i * width) + 1, int((i + 1) * width))
-        chunk = samples[start:end]
+        a, b = int(i * width), max(int(i * width) + 1, int((i + 1) * width))
+        chunk = span[a:b]
         peaks.append(max(max(chunk), -min(chunk)) / 32768.0)
 
-    ceiling = max(peaks) or 1.0
+    # Normalize against the WHOLE file, not the window — otherwise zooming into a quiet
+    # passage would inflate it to look as loud as a shout.
+    ceiling = (max(max(samples), -min(samples)) / 32768.0) if normalize else 1.0
+    ceiling = ceiling or 1.0
     return {
-        "peaks": [round(p / ceiling, 4) for p in peaks],  # normalized for display
+        "peaks": [round(p / ceiling, 4) for p in peaks],
         "absolute_peak": round(ceiling, 4),
-        "duration": total / rate,
+        "duration": duration,
         "sample_rate": rate,
+        "start": round(first / rate, 4),
+        "end": round(last / rate, 4),
     }
 
 

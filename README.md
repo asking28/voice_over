@@ -166,9 +166,19 @@ the next kept moment. It shares nothing with the re-voicing flow except the file
 - **Audio presence.** The waveform envelope is computed from the extracted 16 kHz audio, and
   silence is found with ffmpeg's `silencedetect` — so the quiet stretches are shaded behind the
   waveform and you can see at a glance where there's actually anything to keep.
-- **Marking.** Drag across the waveform to select, click to seek. *Mark long silences* marks
-  every silence over 1 s in one go, leaving 0.15 s of padding either side so words aren't
-  clipped. Overlapping marks merge. Undo is a stack.
+- **Marking.** Drag across the waveform to select, click to seek. *Mark silences* takes every
+  silence at once, with the thresholds exposed: minimum length, noise floor in dB, and how much
+  padding to keep either side so words aren't clipped. The count updates as you tune them
+  (*"7 match — 12.4 s would be removed"*), and changing the dB floor re-runs the detector.
+  Overlapping marks merge. Undo is a stack.
+- **Preview without exporting.** *Preview with cuts skipped* plays the source and jumps over
+  every marked section, so you hear the result before committing to a re-encode. The readout
+  shows position in the *cut* timeline. Driven by `requestAnimationFrame` for a jump you can't
+  hear, with a `timeupdate` fallback because rAF is suspended entirely in a background tab.
+- **Zoom.** Scroll to zoom at the cursor, shift-scroll to pan, or use −/+/Fit and the scrubber.
+  Zooming refetches the envelope for the visible window from `/api/envelope` rather than
+  stretching the full-file one, so the detail is real; it stays normalized against the whole
+  file so a quiet passage doesn't inflate to look like a shout. A time ruler tracks the zoom.
 - **Cutting.** `precise` (default) does one ffmpeg pass with `select`/`aselect` plus
   `setpts`/`asetpts` — the re-timing is what actually closes the gap, and cut points land
   exactly where you put them at the cost of re-encoding the video. `fast` stream-copies each

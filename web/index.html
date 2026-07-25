@@ -233,21 +233,48 @@
     </div>
 
     <div class="wave-wrap">
-      <canvas id="wave" height="150"></canvas>
-      <div class="wave-legend">
-        <span class="k speech"></span> speech
-        <span class="k silence"></span> silence
-        <span class="k cut"></span> marked for removal
+      <canvas id="wave" height="170"></canvas>
+      <div class="row between wave-foot">
+        <div class="wave-legend">
+          <span class="k speech"></span> speech
+          <span class="k silence"></span> silence
+          <span class="k cut"></span> marked for removal
+        </div>
+        <div class="zoom">
+          <span class="hint" id="zoom-label">whole file</span>
+          <button class="btn ghost sm" id="zoom-out" title="zoom out">−</button>
+          <button class="btn ghost sm" id="zoom-in" title="zoom in">+</button>
+          <button class="btn ghost sm" id="zoom-fit" title="fit the whole file">Fit</button>
+        </div>
       </div>
+      <input type="range" id="wave-scroll" class="wave-scroll hidden" min="0" max="1000" value="0">
     </div>
 
     <div class="row toolbar">
-      <span class="hint" id="cut-selection">drag across the waveform to select · click to seek</span>
+      <span class="hint" id="cut-selection">drag to select · click to seek · scroll to zoom · shift-scroll to pan</span>
       <span class="grow"></span>
       <button class="btn ghost sm" id="cut-add" disabled>Remove selection</button>
-      <button class="btn ghost sm" id="cut-silences" title="mark every silence longer than the threshold">Mark long silences</button>
       <button class="btn ghost sm" id="cut-undo" disabled>Undo</button>
       <button class="btn ghost sm danger" id="cut-clear" disabled>Clear all</button>
+    </div>
+
+    <div class="row toolbar silence-bar">
+      <button class="btn ghost sm" id="cut-silences">Mark silences</button>
+      <label class="inline">longer than
+        <input type="number" id="silence-min" value="1.0" step="0.1" min="0.2" max="30" class="tiny"> s
+      </label>
+      <label class="inline">quieter than
+        <input type="number" id="silence-db" value="-35" step="1" min="-70" max="-10" class="tiny"> dB
+      </label>
+      <label class="inline">keep
+        <input type="number" id="silence-pad" value="0.15" step="0.05" min="0" max="1" class="tiny"> s padding
+      </label>
+      <span class="hint" id="silence-count"></span>
+    </div>
+
+    <div class="row toolbar">
+      <button class="btn primary" id="cut-preview-play">▶ Preview with cuts skipped</button>
+      <span class="hint" id="preview-note">plays the result without exporting — jumps over every marked section</span>
     </div>
 
     <video id="cut-video" controls preload="metadata" class="cut-video"></video>
